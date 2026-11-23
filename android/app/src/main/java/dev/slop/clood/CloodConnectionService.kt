@@ -15,6 +15,8 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.telecom.DisconnectCause
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.app.ServiceCompat
@@ -87,13 +89,14 @@ class CloodConnectionService : Service() {
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
 
-    private var socket: WebSocket? = null
+    @Volatile private var socket: WebSocket? = null
     private var reconnectDelayMs = 2000L
     private var destroyed = false
     private var ringWakeLock: PowerManager.WakeLock? = null
     private var proximityWakeLock: PowerManager.WakeLock? = null
     private var activeCodec: AudioCodecType = AudioCodecType.ADPCM_24K
-    private var micFgsActive = false
+    private var callFgsActive = false
+    private var telecomCall: CloodTelecomCall? = null
     private var pendingIncomingNotifRunnable: Runnable? = null
 
     private val silenceReset = Runnable {
@@ -113,11 +116,15 @@ class CloodConnectionService : Service() {
 
     private fun startMinimalForeground(includeMic: Boolean) {
         val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (includeMic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            var types = if (telecomCall != null) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
             } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             }
+            if (includeMic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            types
         } else {
             0
         }
@@ -128,7 +135,7 @@ class CloodConnectionService : Service() {
                 buildServiceNotification(),
                 fgsType,
             )
-            micFgsActive = includeMic
+            callFgsActive = includeMic || telecomCall != null
         }
     }
 
@@ -177,36 +184,23 @@ class CloodConnectionService : Service() {
             }
             ACTION_TOGGLE_SPEAKER -> {
                 val current = CloodSessionBus.activeCall ?: return START_STICKY
+                if (current.phase != CallPhase.ACTIVE) return START_STICKY
                 val desired = if (current.audioRoute == AudioRoute.SPEAKER) {
                     AudioRoute.EARPIECE
                 } else {
                     AudioRoute.SPEAKER
                 }
-                val applied = audioEngine.setAudioRoute(desired)
-                val updated = current.copy(
-                    audioRoute = applied,
-                    bluetoothAvailable = audioEngine.isBluetoothAvailable(),
-                )
-                CloodSessionBus.publishCall(updated)
-                syncProximityWakeLock(updated)
+                selectAudioRoute(current, desired)
             }
             ACTION_TOGGLE_BLUETOOTH -> {
                 val current = CloodSessionBus.activeCall ?: return START_STICKY
-                val btAvail = audioEngine.isBluetoothAvailable()
+                if (current.phase != CallPhase.ACTIVE) return START_STICKY
                 val desired = if (current.audioRoute == AudioRoute.BLUETOOTH) {
                     AudioRoute.EARPIECE
-                } else if (btAvail) {
-                    AudioRoute.BLUETOOTH
                 } else {
-                    current.audioRoute
+                    AudioRoute.BLUETOOTH
                 }
-                val applied = audioEngine.setAudioRoute(desired)
-                val updated = current.copy(
-                    audioRoute = applied,
-                    bluetoothAvailable = btAvail,
-                )
-                CloodSessionBus.publishCall(updated)
-                syncProximityWakeLock(updated)
+                selectAudioRoute(current, desired)
             }
             else -> {
                 if (socket == null) connectNow()
@@ -231,6 +225,7 @@ class CloodConnectionService : Service() {
 
     private fun connectNow() {
         mainHandler.removeCallbacks(reconnectRunnable)
+        if (CloodSessionBus.activeCall != null) teardownCall(notifyPc = false)
         socket?.cancel()
         socket = null
 
@@ -253,34 +248,43 @@ class CloodConnectionService : Service() {
             req,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    reconnectDelayMs = 2000L
-                    CloodSessionBus.publishConnection(ConnectionState.CONNECTED)
+                    mainHandler.post {
+                        if (socket !== webSocket) return@post
+                        reconnectDelayMs = 2000L
+                        CloodSessionBus.publishConnection(ConnectionState.CONNECTED)
+                    }
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
-                    handleServerJson(text)
+                    mainHandler.post {
+                        if (socket === webSocket) handleServerJson(text)
+                    }
                 }
 
                 override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                    handleServerAudio(bytes.toByteArray())
+                    if (socket === webSocket) handleServerAudio(bytes.toByteArray())
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (socket !== webSocket) return
-                    socket = null
-                    teardownCall(notifyPc = false)
-                    scheduleReconnect()
+                    mainHandler.post {
+                        if (socket !== webSocket) return@post
+                        socket = null
+                        teardownCall(notifyPc = false)
+                        scheduleReconnect()
+                    }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (socket !== webSocket) return
-                    socket = null
-                    teardownCall(notifyPc = false)
-                    if (response?.code == 401 || response?.code == 403) {
-                        CloodSessionBus.publishConnection(ConnectionState.OFFLINE)
-                        return
+                    mainHandler.post {
+                        if (socket !== webSocket) return@post
+                        socket = null
+                        teardownCall(notifyPc = false)
+                        if (response?.code == 401 || response?.code == 403) {
+                            CloodSessionBus.publishConnection(ConnectionState.OFFLINE)
+                        } else {
+                            scheduleReconnect()
+                        }
                     }
-                    scheduleReconnect()
                 }
             },
         )
@@ -310,6 +314,8 @@ class CloodConnectionService : Service() {
             }
             "call_incoming" -> {
                 val callId = json.optString("call_id").takeIf { it.isNotBlank() } ?: return
+                if (CloodSessionBus.activeCall?.callId == callId) return
+                if (CloodSessionBus.activeCall != null) teardownCall(notifyPc = false)
                 val cfg = store.load()
                 val callerName = json.optString("caller_name").ifBlank { cfg?.agentName ?: "Clood" }
                 val orbColor = json.optString("orb_color").ifBlank { cfg?.orbColor ?: "#7c8cff" }
@@ -323,10 +329,7 @@ class CloodConnectionService : Service() {
                     phase = CallPhase.RINGING,
                     startedAtMs = System.currentTimeMillis(),
                 )
-                CloodSessionBus.publishCall(incoming)
-                acquireWakeLock()
-                audioEngine.startRingtone(store.loadRingtoneStream())
-                presentIncomingCall(incoming)
+                registerIncomingCall(incoming)
             }
             "call_ended" -> {
                 val callId = json.optString("call_id")
@@ -343,6 +346,47 @@ class CloodConnectionService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    private fun registerIncomingCall(incoming: ActiveCallUi) {
+        CloodSessionBus.publishCall(incoming)
+        val callId = incoming.callId
+        val call = CloodTelecomCall(
+            call = incoming,
+            executor = ContextCompat.getMainExecutor(this),
+            showIncomingCall = { ring(callId) },
+            answer = { answerCall(callId) },
+            reject = { declineCall(callId) },
+            disconnect = {
+                if (CloodSessionBus.activeCall?.callId == callId) teardownCall(notifyPc = true)
+            },
+            silence = {
+                if (CloodSessionBus.activeCall?.callId == callId) audioEngine.stopRingtone()
+            },
+            audioRouteChanged = { route, bluetoothAvailable ->
+                val current = CloodSessionBus.activeCall
+                if (current?.callId == callId && current.phase == CallPhase.ACTIVE) {
+                    updateAudioRoute(current, route, bluetoothAvailable)
+                }
+            },
+        )
+        telecomCall = call
+        if (CloodTelecomService.reportIncomingCall(this, call)) {
+            startMinimalForeground(includeMic = false)
+        } else {
+            telecomCall = null
+            call.finish(DisconnectCause.CANCELED)
+            ring(callId)
+        }
+    }
+
+    private fun ring(callId: String) {
+        val current = CloodSessionBus.activeCall ?: return
+        if (current.callId != callId || current.phase != CallPhase.RINGING) return
+
+        acquireWakeLock()
+        audioEngine.startRingtone(store.loadRingtoneStream())
+        presentIncomingCall(current)
     }
 
     /**
@@ -412,6 +456,7 @@ class CloodConnectionService : Service() {
         )
         CloodSessionBus.publishCall(active)
         syncProximityWakeLock(active)
+        telecomCall?.activate()
 
         socket?.send(
             JSONObject()
@@ -426,8 +471,15 @@ class CloodConnectionService : Service() {
             startMinimalForeground(includeMic = true)
         }
 
-        audioEngine.startCallAudio(activeCodec, active.audioRoute) { encodedFrame ->
-            socket?.send(encodedFrame.toByteString(0, encodedFrame.size))
+        try {
+            val appAudioRoute = if (telecomCall == null) active.audioRoute else null
+            audioEngine.startCallAudio(activeCodec, appAudioRoute) { encodedFrame ->
+                socket?.send(encodedFrame.toByteString(0, encodedFrame.size))
+            }
+        } catch (error: RuntimeException) {
+            Log.e("CloodCall", "Could not start call audio", error)
+            teardownCall(notifyPc = true, disconnectCause = DisconnectCause.ERROR)
+            return
         }
 
         if (!CallActivity.isForeground) {
@@ -435,17 +487,40 @@ class CloodConnectionService : Service() {
         }
     }
 
-    private fun declineCall(callId: String) {
-        socket?.send(
-            JSONObject()
-                .put("type", "call_decline")
-                .put("call_id", callId)
-                .toString(),
-        )
-        teardownCall(notifyPc = false)
+    private fun selectAudioRoute(current: ActiveCallUi, route: AudioRoute) {
+        if (route == AudioRoute.BLUETOOTH && !current.bluetoothAvailable) return
+
+        val call = telecomCall
+        if (call != null) {
+            call.selectRoute(route)
+        } else {
+            updateAudioRoute(current, audioEngine.setAudioRoute(route), audioEngine.isBluetoothAvailable())
+        }
     }
 
-    private fun teardownCall(notifyPc: Boolean, hangupReason: String? = null) {
+    private fun updateAudioRoute(current: ActiveCallUi, route: AudioRoute?, bluetoothAvailable: Boolean) {
+        val updated = current.copy(
+            audioRoute = route ?: current.audioRoute,
+            bluetoothAvailable = bluetoothAvailable,
+        )
+        if (updated != current) {
+            CloodSessionBus.publishCall(updated)
+            syncProximityWakeLock(updated)
+        }
+    }
+
+    private fun declineCall(callId: String) {
+        val current = CloodSessionBus.activeCall ?: return
+        if (current.callId != callId || current.phase != CallPhase.RINGING) return
+
+        teardownCall(notifyPc = true)
+    }
+
+    private fun teardownCall(
+        notifyPc: Boolean,
+        hangupReason: String? = null,
+        disconnectCause: Int? = null,
+    ) {
         val current = CloodSessionBus.activeCall
         if (notifyPc && current != null) {
             socket?.send(
@@ -463,7 +538,14 @@ class CloodConnectionService : Service() {
         cancelIncomingCallNotification()
         releaseWakeLock()
         releaseProximityWakeLock()
-        if (micFgsActive) {
+        val cause = disconnectCause ?: when {
+            !notifyPc -> DisconnectCause.REMOTE
+            current?.phase == CallPhase.RINGING -> DisconnectCause.REJECTED
+            else -> DisconnectCause.LOCAL
+        }
+        telecomCall?.finish(cause)
+        telecomCall = null
+        if (callFgsActive && !destroyed) {
             startMinimalForeground(includeMic = false)
         }
         CloodSessionBus.publishAudioLevel(false, 0f)

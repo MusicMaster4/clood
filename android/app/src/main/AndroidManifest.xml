@@ -66,6 +66,15 @@
             android:exported="false"
             android:foregroundServiceType="dataSync|microphone|phoneCall" />
 
+        <service
+            android:name=".CloodTelecomService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".CallActionReceiver"
             android:exported="false" />

@@ -37,6 +37,7 @@ class CallAudioEngine(private val context: Context) {
     private val running = AtomicBoolean(false)
     @Volatile private var muted = false
 
+    private var managesRouting = false
     private var audioTrack: AudioTrack? = null
     private var audioRecord: AudioRecord? = null
     private var aec: AcousticEchoCanceler? = null
@@ -148,14 +149,17 @@ class CallAudioEngine(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun startCallAudio(
         codec: AudioCodecType,
-        initialRoute: AudioRoute,
+        initialRoute: AudioRoute?,
         onEncodedMicFrame: (ByteArray) -> Unit,
     ) {
         stopRingtone()
         stopCallAudio()
 
-        audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-        setAudioRoute(initialRoute)
+        if (initialRoute != null) {
+            managesRouting = true
+            audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
+            setAudioRoute(initialRoute)
+        }
 
         val minPlayBuf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE,
@@ -300,6 +304,8 @@ class CallAudioEngine(private val context: Context) {
         runCatching { audioTrack?.release() }
         audioTrack = null
 
+        if (!managesRouting) return
+        managesRouting = false
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching { audioManager?.clearCommunicationDevice() }
         } else {
