@@ -3,7 +3,7 @@
 
 export const EXTENT = 1.6;
 export const GLOW_OVERFLOW = (EXTENT - 1) / 2;
-export const MAX_DPR = 2;
+export const MAX_DPR = 1.5;
 export const MAX_BACKING = 1600;
 
 export const STATES = {

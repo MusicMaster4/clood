@@ -57,7 +57,6 @@
     radial-gradient(ellipse 60% 22% at 40% 45%, rgb(255 255 255 / 0.28), transparent 70%),
     radial-gradient(ellipse 45% 18% at 62% 62%, rgb(255 255 255 / 0.16), transparent 70%);
   mix-blend-mode: screen;
-  animation: orb-sheen 16s linear infinite;
 }
 
 .orb[data-state="speaking"] .orb-css {
@@ -65,11 +64,19 @@
 }
 
 .orb[data-state="speaking"] .orb-css::after {
-  animation-duration: 1.4s;
+  animation: orb-sheen 1.4s linear infinite;
+}
+
+.orb[data-state="ringing"] .orb-css::after {
+  animation: orb-sheen 3s linear infinite;
 }
 
 .orb[data-gl="on"] .orb-css {
   opacity: 0;
+}
+
+.orb[data-gl="on"] .orb-css::after {
+  animation: none;
 }
 
 @keyframes orb-sheen {
@@ -79,7 +86,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orb-css::after {
+  .orb[data-state] .orb-css::after {
     animation: none;
   }
 }

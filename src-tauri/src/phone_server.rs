@@ -13,12 +13,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 use crate::calls::{AppState, PhoneOutbound};
 use crate::codec::decode_wire_frame;
-use crate::tailscale::is_tailscale_ipv4;
+use crate::tailscale::{detect_tailscale, is_tailscale_ipv4};
 
 #[derive(Debug, Deserialize)]
 struct PairVerifyBody {
@@ -178,15 +179,25 @@ async fn handle_phone_socket(state: Arc<AppState>, socket: WebSocket, device_nam
 
 /// Supervises the Tailscale-bound phone server. Strictly binds ONLY to the local Tailscale IPv4.
 pub async fn supervise_phone_server(state: Arc<AppState>, mut restart_rx: watch::Receiver<u64>) {
-    loop {
-        let (ts_ip, port) = {
-            let ts = state.tailscale.read().await.clone();
-            let cfg = state.config.read().await.clone();
-            let ip = ts.ipv4.and_then(|s| s.parse::<Ipv4Addr>().ok());
-            (ip, cfg.tailscale_port)
-        };
+    const RETRY_INTERVAL: Duration = Duration::from_secs(12);
+    const MAX_OFFLINE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+    let mut delay = RETRY_INTERVAL;
 
-        if let Some(ip) = ts_ip.filter(|&v| is_tailscale_ipv4(v)) {
+    let initial = detect_tailscale().await;
+    *state.tailscale.write().await = initial;
+    loop {
+        let port = state.config.read().await.tailscale_port;
+        let ts_ip = state
+            .tailscale
+            .read()
+            .await
+            .ipv4
+            .as_ref()
+            .and_then(|s| s.parse::<Ipv4Addr>().ok())
+            .filter(|&ip| is_tailscale_ipv4(ip));
+
+        if let Some(ip) = ts_ip {
+            delay = RETRY_INTERVAL;
             let addr = SocketAddr::new(IpAddr::V4(ip), port);
             match tokio::net::TcpListener::bind(addr).await {
                 Ok(listener) => {
@@ -221,12 +232,16 @@ pub async fn supervise_phone_server(state: Arc<AppState>, mut restart_rx: watch:
             state.emit_status().await;
         }
 
-        // Wait either for an explicit restart trigger or retry periodically when Tailscale comes online.
+        // Settings and manual refresh wake the server immediately. Back off while offline.
         tokio::select! {
-            _ = restart_rx.changed() => {}
-            _ = tokio::time::sleep(std::time::Duration::from_secs(12)) => {
-                let fresh = crate::tailscale::detect_tailscale();
+            change = restart_rx.changed() => {
+                if change.is_err() { break; }
+                delay = RETRY_INTERVAL;
+            }
+            _ = tokio::time::sleep(delay) => {
+                let fresh = detect_tailscale().await;
                 *state.tailscale.write().await = fresh;
+                delay = (delay * 2).min(MAX_OFFLINE_RETRY_INTERVAL);
             }
         }
     }

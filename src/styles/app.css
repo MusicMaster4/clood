@@ -273,15 +273,15 @@ body,
 }
 
 .drawer-panel {
-  width: 360px;
+  width: 440px;
   max-width: 92vw;
   height: 100%;
   background: var(--surface-strong);
   border-left: 1px solid var(--border);
-  padding: 18px;
+  padding: 22px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
 }
 
 .drawer-scroll {
@@ -335,12 +335,17 @@ body,
 }
 
 .qr-frame {
-  padding: 12px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
+  padding: 10px;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
   display: grid;
   place-items: center;
+}
+
+.qr-frame img {
+  display: block;
+  border-radius: 8px;
 }
 
 .qr-empty {
@@ -742,4 +747,220 @@ button:disabled {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Switches */
+.toggle-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.toggle-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  color: rgba(244, 244, 245, 0.88);
+  cursor: pointer;
+}
+
+.toggle-row[data-disabled="1"] {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.toggle-row input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toggle-track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #27272a;
+  transition: background 0.18s ease;
+  flex: none;
+}
+
+.toggle-track::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #a1a1aa;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+.toggle-row input:checked + .toggle-track {
+  background: #f4f4f5;
+}
+
+.toggle-row input:checked + .toggle-track::after {
+  transform: translateX(16px);
+  background: #09090b;
+}
+
+/* Onboarding */
+.onboarding {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  align-items: center;
+  gap: 28px;
+  padding: 12px 48px 36px;
+}
+
+.onboarding-visual {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+}
+
+.onboarding-orb-wrap {
+  padding: 40px;
+  display: grid;
+  place-items: center;
+}
+
+.step-dots {
+  display: flex;
+  gap: 8px;
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 0;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  transition: width 0.22s ease, background 0.22s ease;
+}
+
+.step-dot[data-done="1"] {
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.step-dot[data-active="1"] {
+  width: 24px;
+  background: #f4f4f5;
+}
+
+.onboarding-card {
+  background: rgba(19, 19, 23, 0.9);
+  border: 1px solid var(--border-hi);
+  border-radius: 22px;
+  padding: 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 410px;
+}
+
+.onboarding-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.step-kicker {
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+
+.onboarding-head h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.onboarding-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.ts-check-box {
+  padding: 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ts-check-box[data-ok="1"] {
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.06);
+}
+
+.ts-check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.ts-check-box[data-ok="1"] .ts-check-row {
+  color: var(--ok);
+}
+
+.ts-check-meta {
+  color: rgba(244, 244, 245, 0.78);
+}
+
+.ts-check-hint {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.onboarding-qr-wrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+.onboarding-qr-empty {
+  width: 196px;
+  height: 196px;
+}
+
+.onboarding-foot {
+  margin-top: auto;
+  display: flex;
+  gap: 10px;
+}
+
+.onboarding-foot .ghost-btn {
+  flex: 0 0 110px;
+}
+
+.onboarding-foot .primary-btn {
+  flex: 1;
 }

@@ -150,9 +150,36 @@ class CloodConnectionService : Service() {
             }
             ACTION_TOGGLE_SPEAKER -> {
                 val current = CloodSessionBus.activeCall ?: return START_STICKY
-                val nextSpeaker = !current.speakerOn
-                audioEngine.setSpeaker(nextSpeaker)
-                CloodSessionBus.publishCall(current.copy(speakerOn = nextSpeaker))
+                val desired = if (current.audioRoute == AudioRoute.SPEAKER) {
+                    AudioRoute.EARPIECE
+                } else {
+                    AudioRoute.SPEAKER
+                }
+                val applied = audioEngine.setAudioRoute(desired)
+                CloodSessionBus.publishCall(
+                    current.copy(
+                        audioRoute = applied,
+                        bluetoothAvailable = audioEngine.isBluetoothAvailable(),
+                    ),
+                )
+            }
+            ACTION_TOGGLE_BLUETOOTH -> {
+                val current = CloodSessionBus.activeCall ?: return START_STICKY
+                val btAvail = audioEngine.isBluetoothAvailable()
+                val desired = if (current.audioRoute == AudioRoute.BLUETOOTH) {
+                    AudioRoute.EARPIECE
+                } else if (btAvail) {
+                    AudioRoute.BLUETOOTH
+                } else {
+                    current.audioRoute
+                }
+                val applied = audioEngine.setAudioRoute(desired)
+                CloodSessionBus.publishCall(
+                    current.copy(
+                        audioRoute = applied,
+                        bluetoothAvailable = btAvail,
+                    ),
+                )
             }
             else -> {
                 if (socket == null) connectNow()
@@ -316,9 +343,13 @@ class CloodConnectionService : Service() {
         audioEngine.stopRingtone()
         releaseWakeLock()
 
+        val btAvailable = audioEngine.isBluetoothAvailable()
+        val initialRoute = if (btAvailable) AudioRoute.BLUETOOTH else AudioRoute.SPEAKER
         val active = current.copy(
             phase = CallPhase.ACTIVE,
             answeredAtMs = System.currentTimeMillis(),
+            audioRoute = initialRoute,
+            bluetoothAvailable = btAvailable,
         )
         CloodSessionBus.publishCall(active)
 
@@ -342,7 +373,7 @@ class CloodConnectionService : Service() {
             }
         }
 
-        audioEngine.startCallAudio(activeCodec) { encodedFrame ->
+        audioEngine.startCallAudio(activeCodec, initialRoute) { encodedFrame ->
             socket?.send(encodedFrame.toByteString(0, encodedFrame.size))
         }
 
@@ -499,6 +530,7 @@ class CloodConnectionService : Service() {
         const val ACTION_HANGUP = "dev.slop.clood.HANGUP"
         const val ACTION_TOGGLE_MUTE = "dev.slop.clood.TOGGLE_MUTE"
         const val ACTION_TOGGLE_SPEAKER = "dev.slop.clood.TOGGLE_SPEAKER"
+        const val ACTION_TOGGLE_BLUETOOTH = "dev.slop.clood.TOGGLE_BLUETOOTH"
         const val EXTRA_CALL_ID = "call_id"
 
         private const val NOTIF_ID_SERVICE = 1001

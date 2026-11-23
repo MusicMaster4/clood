@@ -138,17 +138,38 @@ Asynchronous (if your shell or tool imposes short HTTP timeouts):
 
 ---
 
-### Step 4 — Handle Call Outcomes & Act on the Transcript
+### Step 4 — Handle Call Outcomes, Escalated Retry Policy & Transcript Analysis
 
 After the call finishes, inspect `status` and `transcript_text`:
 
 | `status` | Meaning | What you should do |
 | --- | --- | --- |
 | `completed` | User answered and the call finished | Carefully read `transcript_text`, extract every decision, constraint, or follow-up instruction from the `User:` lines, summarize your understanding briefly, and continue executing the task! |
-| `declined` | User rejected the incoming call | Do **not** immediately redial. Leave a clear written summary of the pending question/state for the user in chat and pause any unapproved risky action. |
-| `missed` | Phone rang until `ring_timeout_sec` expired | Do **not** spam redials. Inform the user you tried calling and summarize what you needed in text (or wait if the user instructed you to retry later). |
+| `declined` or `missed` | User rejected the call or did not pick up | **Follow the Escalated Retry & Pause Policy below strictly.** |
 | `failed` | Connection or OpenAI Live error (`error` field) | Inspect `error`, report the root cause clearly, and fall back to text communication. |
-| `cancelled` | Call was terminated via `/hangup` or PC UI | Respect cancellation and check with the user in text. |
+| `cancelled` | Call was terminated via `/hangup` or PC UI | Respect cancellation and pause/check with the user in text. |
+
+#### Escalated Retry & Pause Policy (REQUIRED on `declined` / `missed`)
+
+When the user declines a call (`declined`) or misses it (`missed`), follow this exact 3-strike schedule:
+
+1. **1st refusal / missed call**:
+   - Do **not** abort the task yet and do **not** redial immediately.
+   - Wait **5 minutes** (use your runtime's timer/schedule tool if available, or run `clood_call.py call --retry-backoff`), then place **Attempt #2** with the same (or updated) context.
+2. **2nd refusal / missed call**:
+   - Wait **15 minutes**, then place **Attempt #3** (final attempt).
+3. **3rd refusal / missed call**:
+   - **STOP calling immediately and PAUSE all work.**
+   - Do **not** make a 4th call and do **not** proceed with unapproved decisions or destructive actions.
+   - Leave a clear, concise written status report for the user summarizing: what has already been completed, where work is paused, and the exact questions/decisions waiting for their input once they return.
+
+You can also let the bundled CLI execute this exact 5 min → 15 min → stop schedule automatically:
+
+```bash
+python scripts/clood_call.py call --retry-backoff --context-file brief.txt --opening "..."
+```
+
+When `--retry-backoff` exhausts all 3 attempts without an answer, it exits with code `2` and returns `"action": "pause_work"` so you immediately know to pause and wait for the user.
 
 #### Analyzing the Transcript Properly
 

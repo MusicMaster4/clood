@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -99,8 +100,36 @@ def cmd_call(args: argparse.Namespace) -> int:
     http_timeout = (
         float(args.ring_timeout + args.max_duration + 60) if not args.no_wait else 20.0
     )
-    code, data = request_json("POST", "/api/v1/calls", body=payload, timeout=http_timeout, base_url=args.url)
-    return emit(data, code)
+
+    if not args.retry_backoff or args.no_wait:
+        code, data = request_json("POST", "/api/v1/calls", body=payload, timeout=http_timeout, base_url=args.url)
+        return emit(data, code)
+
+    # Escalated retry schedule: initial attempt -> wait 5 min -> retry #2 -> wait 15 min -> retry #3 -> pause work
+    retry_delays_sec = [5 * 60, 15 * 60]
+    attempt = 1
+    while True:
+        code, data = request_json("POST", "/api/v1/calls", body=payload, timeout=http_timeout, base_url=args.url)
+        status = data.get("status")
+        if status not in ("declined", "missed"):
+            data["attempts"] = attempt
+            return emit(data, code)
+
+        if attempt > len(retry_delays_sec):
+            data["attempts"] = attempt
+            data["action"] = "pause_work"
+            data["note"] = "Call was declined/missed 3 times (0m, +5m, +15m). Pause work and wait for the user."
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return 2
+
+        wait_sec = retry_delays_sec[attempt - 1]
+        print(
+            f"[clood] Attempt {attempt} {status}; retrying in {wait_sec // 60} minutes...",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(wait_sec)
+        attempt += 1
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -160,6 +189,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_call.add_argument("--ring-timeout", type=int, default=45, help="Ring timeout in seconds")
     p_call.add_argument("--max-duration", type=int, default=900, help="Max call duration in seconds")
     p_call.add_argument("--no-wait", action="store_true", help="Return immediately without waiting for transcript")
+    p_call.add_argument(
+        "--retry-backoff",
+        action="store_true",
+        help="On declined/missed: retry after 5m, then 15m, then exit 2 with action=pause_work",
+    )
     p_call.set_defaults(func=cmd_call)
 
     p_wait = sub.add_parser("wait", help="Wait for an in-progress call to finish and return transcript")

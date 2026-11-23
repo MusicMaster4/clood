@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 use uuid::Uuid;
 
@@ -133,10 +133,9 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Arc<Self> {
         let cfg = load_config();
-        let ts = detect_tailscale();
         Arc::new(Self {
             config: RwLock::new(cfg),
-            tailscale: RwLock::new(ts),
+            tailscale: RwLock::new(TailscaleInfo::default()),
             phone_server_running: RwLock::new(false),
             phone: Mutex::new(None),
             active_call: Mutex::new(None),
@@ -194,16 +193,27 @@ impl AppState {
     }
 
     pub async fn emit_status(&self) {
-        let st = self.status().await;
-        if let Some(handle) = self.app_handle.read().await.as_ref() {
-            let _ = handle.emit("clood://status", &st);
+        let window = self
+            .app_handle
+            .read()
+            .await
+            .as_ref()
+            .and_then(|app| app.get_webview_window("main"));
+        if let Some(window) = window {
+            let _ = window.emit("clood://status", &self.status().await);
         }
     }
 
     pub async fn emit_audio_level(&self, speaking: bool, level: f32) {
         *self.speaking.write().await = (speaking, level);
-        if let Some(handle) = self.app_handle.read().await.as_ref() {
-            let _ = handle.emit(
+        let window = self
+            .app_handle
+            .read()
+            .await
+            .as_ref()
+            .and_then(|app| app.get_webview_window("main"));
+        if let Some(window) = window {
+            let _ = window.emit(
                 "clood://audio-level",
                 json!({ "speaking": speaking, "level": level }),
             );
@@ -266,6 +276,7 @@ impl AppState {
             next.agent_name = "Clood".to_string();
         }
         save_config(&next)?;
+        let _ = crate::startup::set_launch_at_startup(next.launch_at_startup, next.start_in_tray);
         let port_changed = next.tailscale_port != prev.tailscale_port;
         *self.config.write().await = next.clone();
         self.send_config_sync_to_phone().await;
@@ -277,7 +288,7 @@ impl AppState {
     }
 
     pub async fn refresh_tailscale(&self) -> RuntimeStatus {
-        let ts = detect_tailscale();
+        let ts = detect_tailscale().await;
         *self.tailscale.write().await = ts;
         self.trigger_phone_server_restart().await;
         self.emit_status().await;

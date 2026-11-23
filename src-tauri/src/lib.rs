@@ -4,13 +4,17 @@ mod codec;
 mod config;
 mod openai_live;
 mod phone_server;
+mod startup;
 mod tailscale;
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, State, WindowEvent,
+    AppHandle, Manager, RunEvent, State, WebviewWindowBuilder, WindowEvent,
 };
 use tokio::sync::watch;
 
@@ -100,24 +104,65 @@ async fn delete_call(state: State<'_, Arc<AppState>>, call_id: String) -> Result
     state.delete_call(&call_id)
 }
 
+#[derive(Default)]
+struct UpdateInstallation(AtomicBool);
+
+#[tauri::command]
+fn set_update_installing(installing: bool, state: State<'_, UpdateInstallation>) {
+    state.0.store(installing, Ordering::Relaxed);
+}
+
+fn show_main_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(win) = app.get_webview_window("main") {
+        win.show()?;
+        win.unminimize()?;
+        win.set_focus()
+    } else {
+        let config = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|config| config.label == "main")
+            .expect("main window configuration");
+        WebviewWindowBuilder::from_config(app, config)?.build()?;
+        Ok(())
+    }
+}
+
+fn reopen_main_window(app: &AppHandle) {
+    if let Err(err) = show_main_window(app) {
+        eprintln!("Failed to open Clood window: {err}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // The tray service runs socket I/O and one call at a time.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("create Clood async runtime");
+    tauri::async_runtime::set(runtime.handle().clone());
 
     let state = AppState::new();
     let state_for_setup = Arc::clone(&state);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let window_app = app.clone();
+                let _ = app.run_on_main_thread(move || reopen_main_window(&window_app));
+            });
+        }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.unminimize();
-                let _ = win.set_focus();
-            }
-        }))
         .manage(state)
+        .manage(UpdateInstallation::default())
         .invoke_handler(tauri::generate_handler![
             get_config,
             save_config,
@@ -129,10 +174,16 @@ pub fn run() {
             hangup_active_call,
             list_calls,
             delete_call,
+            set_update_installing,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
             let state_bg = Arc::clone(&state_for_setup);
+            let launched_minimized = std::env::args().any(|a| a == "--minimized");
+
+            if !launched_minimized {
+                show_main_window(&handle)?;
+            }
 
             // System tray so Clood can stay resident for agent calls
             let show_i = MenuItem::with_id(app, "show", "Open Clood", true, None::<&str>)?;
@@ -143,13 +194,7 @@ pub fn run() {
                 .menu(&menu)
                 .tooltip("Clood")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(win) = app.get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.unminimize();
-                            let _ = win.set_focus();
-                        }
-                    }
+                    "show" => reopen_main_window(app),
                     "quit" => {
                         app.exit(0);
                     }
@@ -162,18 +207,14 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        if let Some(win) = tray.app_handle().get_webview_window("main") {
-                            let _ = win.show();
-                            let _ = win.unminimize();
-                            let _ = win.set_focus();
-                        }
+                        reopen_main_window(tray.app_handle());
                     }
                 });
 
             if let Some(icon) = app.default_window_icon().cloned() {
                 tray_builder = tray_builder.icon(icon);
             }
-            let _ = tray_builder.build(app);
+            tray_builder.build(app)?;
 
             tauri::async_runtime::spawn(async move {
                 state_bg.set_app_handle(handle).await;
@@ -194,12 +235,27 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Hide to tray on close so AI agents can still call the phone seamlessly.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                // The updater reports progress and requests a relaunch through this webview.
+                if window
+                    .state::<UpdateInstallation>()
+                    .0
+                    .load(Ordering::Relaxed)
+                {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Clood");
+        .build(tauri::generate_context!())
+        .expect("error while building Clood")
+        .run(|_, event| {
+            // Closing the last window frees the webview while the tray service stays up.
+            if let RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }

@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { Orb, type OrbState } from "./components/Orb";
+import { Onboarding } from "./components/Onboarding";
 import { PairModal } from "./components/PairModal";
 import { SettingsDrawer } from "./components/SettingsDrawer";
 import { HistoryDrawer } from "./components/HistoryDrawer";
@@ -50,26 +51,37 @@ export function App() {
   const updater = useUpdater();
 
   useEffect(() => {
-    void getConfig().then(setConfig);
-    void getStatus().then(setStatus);
-
-    let unStatus: (() => void) | undefined;
-    let unAudio: (() => void) | undefined;
-
-    void onStatusEvent((next) => {
-      setStatus(next);
-      setAudio({ speaking: next.agent_speaking, level: next.audio_level });
-    }).then((fn) => {
-      unStatus = fn;
+    let disposed = false;
+    let gotStatus = false;
+    let gotAudio = false;
+    void getConfig().then((next) => {
+      if (!disposed) setConfig(next);
     });
 
-    void onAudioLevelEvent((lvl) => setAudio(lvl)).then((fn) => {
-      unAudio = fn;
+    const statusListener = onStatusEvent((next) => {
+      if (disposed) return;
+      gotStatus = true;
+      gotAudio = true;
+      setStatus(next);
+      setAudio({ speaking: next.agent_speaking, level: next.audio_level });
+    });
+    const audioListener = onAudioLevelEvent((level) => {
+      if (disposed) return;
+      gotAudio = true;
+      setAudio(level);
+    });
+    void Promise.all([statusListener, audioListener]).then(async () => {
+      if (disposed) return;
+      const next = await getStatus();
+      if (disposed) return;
+      if (!gotStatus) setStatus(next);
+      if (!gotAudio) setAudio({ speaking: next.agent_speaking, level: next.audio_level });
     });
 
     return () => {
-      unStatus?.();
-      unAudio?.();
+      disposed = true;
+      void statusListener.then((unlisten) => unlisten());
+      void audioListener.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -120,6 +132,7 @@ export function App() {
   const orbState: OrbState = isRinging ? "ringing" : audio.speaking ? "speaking" : "idle";
   const orbColor = config?.orb_color ?? "#7c8cff";
   const updateAvailable = updater.status.kind === "available";
+  const showOnboarding = Boolean(config && status && !config.onboarding_completed);
 
   return (
     <div className="shell">
@@ -153,73 +166,86 @@ export function App() {
         </div>
       </header>
 
-      <main className="stage">
-        <div className="orb-wrap">
-          <Orb
-            state={orbState}
-            color={orbColor}
-            level={audio.level}
-            previewTint={!isActive}
-            size={236}
-            label={config?.agent_name || "Clood"}
-          />
-        </div>
+      {showOnboarding && config && status ? (
+        <Onboarding
+          config={config}
+          status={status}
+          onSave={handleSaveConfig}
+          onStatusChange={setStatus}
+        />
+      ) : (
+        <>
+          <main className="stage">
+            <div className="orb-wrap">
+              {config && status && (
+                <Orb
+                  state={orbState}
+                  color={orbColor}
+                  level={audio.level}
+                  previewTint={!isActive}
+                  size={256}
+                  label={config.agent_name || "Clood"}
+                />
+              )}
+            </div>
 
-        <div className="stage-cue">
-          {isActive && <span className="mono">{formatTimer(activeCall?.answered_at_ms ?? null)}</span>}
-          {isRinging && <span className="cue-pulse">Ringing</span>}
-          {!isActive && !isRinging && toast && <span className="cue-toast">{toast}</span>}
-        </div>
-      </main>
+            <div className="stage-cue">
+              {isActive && <span className="mono">{formatTimer(activeCall?.answered_at_ms ?? null)}</span>}
+              {isRinging && <span className="cue-pulse">Ringing</span>}
+              {!isActive && !isRinging && toast && <span className="cue-toast">{toast}</span>}
+            </div>
+          </main>
 
-      <nav className="dock" aria-label="Controls">
-        <button
-          className={isRinging || isActive ? "dock-btn dock-danger" : "dock-btn"}
-          onClick={() => void handleCallToggle()}
-          title={isRinging || isActive ? "End call" : "Test call"}
-          aria-label={isRinging || isActive ? "End call" : "Test call"}
-        >
-          {isRinging || isActive ? <PhoneOff size={18} /> : <Phone size={18} />}
-        </button>
+          <nav className="dock" aria-label="Controls">
+            <button
+              className={isRinging || isActive ? "dock-btn dock-danger" : "dock-btn"}
+              onClick={() => void handleCallToggle()}
+              title={isRinging || isActive ? "End call" : "Test call"}
+              aria-label={isRinging || isActive ? "End call" : "Test call"}
+            >
+              {isRinging || isActive ? <PhoneOff size={18} /> : <Phone size={18} />}
+            </button>
 
-        <button
-          className="dock-btn"
-          onClick={() => setPairOpen(true)}
-          title="Pair"
-          aria-label="Pair"
-          data-indicator={status?.phone_connected ? "on" : undefined}
-        >
-          <QrCode size={18} />
-        </button>
+            <button
+              className="dock-btn"
+              onClick={() => setPairOpen(true)}
+              title="Pair"
+              aria-label="Pair"
+              data-indicator={status?.phone_connected ? "on" : undefined}
+            >
+              <QrCode size={18} />
+            </button>
 
-        <button
-          className="dock-btn"
-          onClick={() => setHistoryOpen(true)}
-          title="Transcripts"
-          aria-label="Transcripts"
-        >
-          <History size={18} />
-        </button>
+            <button
+              className="dock-btn"
+              onClick={() => setHistoryOpen(true)}
+              title="Transcripts"
+              aria-label="Transcripts"
+            >
+              <History size={18} />
+            </button>
 
-        <button
-          className="dock-btn"
-          onClick={() => setSettingsOpen(true)}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <SlidersHorizontal size={18} />
-        </button>
+            <button
+              className="dock-btn"
+              onClick={() => setSettingsOpen(true)}
+              title="Settings"
+              aria-label="Settings"
+            >
+              <SlidersHorizontal size={18} />
+            </button>
 
-        <button
-          className="dock-btn"
-          onClick={updater.check}
-          title="Updates"
-          aria-label="Updates"
-          data-badge={updateAvailable ? "1" : undefined}
-        >
-          <ArrowUpCircle size={18} />
-        </button>
-      </nav>
+            <button
+              className="dock-btn"
+              onClick={updater.check}
+              title="Updates"
+              aria-label="Updates"
+              data-badge={updateAvailable ? "1" : undefined}
+            >
+              <ArrowUpCircle size={18} />
+            </button>
+          </nav>
+        </>
+      )}
 
       {status && (
         <PairModal

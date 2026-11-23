@@ -16,6 +16,9 @@ export interface CloodConfig {
   pairing_token: string;
   base_instructions: string;
   paired_device_name: string | null;
+  launch_at_startup: boolean;
+  start_in_tray: boolean;
+  onboarding_completed: boolean;
 }
 
 export interface TailscaleInfo {
@@ -80,6 +83,9 @@ const DEFAULT_CONFIG: CloodConfig = {
   base_instructions:
     "You are calling the user over Clood. Be concise, natural, warm, and direct. Respond in the same language as the context or user.",
   paired_device_name: null,
+  launch_at_startup: false,
+  start_in_tray: true,
+  onboarding_completed: false,
 };
 
 const DEFAULT_STATUS: RuntimeStatus = {

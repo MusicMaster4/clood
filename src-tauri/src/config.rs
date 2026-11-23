@@ -5,6 +5,10 @@ use std::path::PathBuf;
 
 use crate::codec::AudioCodec;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CloodConfig {
     pub openai_api_key: String,
@@ -18,6 +22,12 @@ pub struct CloodConfig {
     pub pairing_token: String,
     pub base_instructions: String,
     pub paired_device_name: Option<String>,
+    #[serde(default)]
+    pub launch_at_startup: bool,
+    #[serde(default = "default_true")]
+    pub start_in_tray: bool,
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for CloodConfig {
@@ -33,6 +43,9 @@ impl Default for CloodConfig {
             pairing_token: generate_token(),
             base_instructions: "You are calling the user over Clood. Be concise, natural, warm, and direct. Speak in the same language as the provided context or the user.".to_string(),
             paired_device_name: None,
+            launch_at_startup: false,
+            start_in_tray: true,
+            onboarding_completed: false,
         }
     }
 }
