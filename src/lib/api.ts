@@ -179,3 +179,8 @@ export async function onAudioLevelEvent(
   if (!TAURI) return () => {};
   return listen<{ speaking: boolean; level: number }>("clood://audio-level", (e) => cb(e.payload));
 }
+
+export async function onCallErrorEvent(cb: (error: string) => void): Promise<UnlistenFn> {
+  if (!TAURI) return () => {};
+  return listen<string>("clood://call-error", (e) => cb(e.payload));
+}

@@ -741,6 +741,19 @@ impl AppState {
         }
 
         self.emit_audio_level(false, 0.0).await;
+        if finalized.status == CallStatus::Failed {
+            if let Some(err) = finalized.error.as_deref() {
+                let window = self
+                    .app_handle
+                    .read()
+                    .await
+                    .as_ref()
+                    .and_then(|app| app.get_webview_window("main"));
+                if let Some(window) = window {
+                    let _ = window.emit("clood://call-error", err);
+                }
+            }
+        }
         self.emit_status().await;
         Some(finalized)
     }
