@@ -15,6 +15,7 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
 import android.os.Build
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
@@ -24,7 +25,8 @@ import kotlin.math.max
 
 /**
  * Full-duplex 24 kHz voice engine (with hardware echo cancellation),
- * 3-way audio routing (Bluetooth / Speaker / Earpiece), and native system ringtone.
+ * 3-way audio routing (Bluetooth / Speaker / Earpiece), and native system ringtone
+ * supporting both Ringtone and Alarm volume channels.
  */
 class CallAudioEngine(private val context: Context) {
     private val audioManager = context.getSystemService(AudioManager::class.java)
@@ -43,19 +45,27 @@ class CallAudioEngine(private val context: Context) {
     private var agc: AutomaticGainControl? = null
     private var recordThread: Thread? = null
 
-    fun startRingtone() {
+    fun startRingtone(stream: RingtoneStream = RingtoneStream.RINGTONE) {
         stopRingtone()
         val mode = audioManager?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL
+        val useAlarm = stream == RingtoneStream.ALARM
 
-        if (mode == AudioManager.RINGER_MODE_NORMAL) {
+        val shouldPlayAudio = useAlarm || mode == AudioManager.RINGER_MODE_NORMAL
+        if (shouldPlayAudio) {
             runCatching {
                 val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                    ?: (if (useAlarm) RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM) else null)
                     ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
                 if (uri != null) {
+                    val usage = if (useAlarm) {
+                        AudioAttributes.USAGE_ALARM
+                    } else {
+                        AudioAttributes.USAGE_NOTIFICATION_RINGTONE
+                    }
                     ringtonePlayer = MediaPlayer().apply {
                         setAudioAttributes(
                             AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setUsage(usage)
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                                 .build(),
                         )
@@ -68,7 +78,8 @@ class CallAudioEngine(private val context: Context) {
             }
         }
 
-        if (mode != AudioManager.RINGER_MODE_SILENT) {
+        val shouldVibrate = useAlarm || mode != AudioManager.RINGER_MODE_SILENT
+        if (shouldVibrate) {
             runCatching {
                 val vib = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     context.getSystemService(VibratorManager::class.java)?.defaultVibrator
@@ -77,9 +88,24 @@ class CallAudioEngine(private val context: Context) {
                     context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
                 }
                 vibrator = vib
-                vib?.vibrate(
-                    VibrationEffect.createWaveform(longArrayOf(0L, 650L, 900L), 0),
-                )
+                val effect = VibrationEffect.createWaveform(longArrayOf(0L, 650L, 900L), 0)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val attrs = VibrationAttributes.Builder()
+                        .setUsage(
+                            if (useAlarm) VibrationAttributes.USAGE_ALARM else VibrationAttributes.USAGE_RINGTONE,
+                        )
+                        .build()
+                    vib?.vibrate(effect, attrs)
+                } else {
+                    @Suppress("DEPRECATION")
+                    val audioAttrs = AudioAttributes.Builder()
+                        .setUsage(
+                            if (useAlarm) AudioAttributes.USAGE_ALARM else AudioAttributes.USAGE_NOTIFICATION_RINGTONE,
+                        )
+                        .build()
+                    @Suppress("DEPRECATION")
+                    vib?.vibrate(effect, audioAttrs)
+                }
             }
         }
     }

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Clood</string>
+
+    <!-- Call Screen -->
+    <string name="call_incoming_badge">CHAMADA RECEBIDA</string>
+    <string name="call_live_badge">AO VIVO</string>
+    <string name="call_muted_badge">MUDO</string>
+    <string name="call_slide_hint">Arraste para atender ou recusar</string>
+    <string name="call_slide_answer">Atender</string>
+    <string name="call_slide_decline">Recusar</string>
+    <string name="call_status_speaking">FALANDO</string>
+    <string name="call_status_listening">OUVINDO</string>
+    <string name="call_status_muted">MICROFONE MUDO</string>
+    <string name="call_mute">Mudo</string>
+    <string name="call_muted">Mudo</string>
+    <string name="call_speaker">Alto-falante</string>
+    <string name="call_earpiece">Telefone</string>
+    <string name="call_bluetooth">Bluetooth</string>
+    <string name="call_bluetooth_on">BT Ativo</string>
+    <string name="call_end">Encerrar</string>
+    <string name="call_end_hold_hint">Segure para mais opções</string>
+    <string name="call_hold_prompt">Arraste até um balão</string>
+    <string name="call_hold_release_cancel">Solte aqui para continuar</string>
+    <string name="call_opt_redial_short">Em 10 min</string>
+    <string name="call_opt_redial_title">Ligar de novo em 10 min</string>
+    <string name="call_opt_redial_desc">Descarta a chamada e pede retorno</string>
+    <string name="call_opt_cancel_short">Cancelar</string>
+    <string name="call_opt_cancel_title">Cancelar ligação</string>
+    <string name="call_opt_cancel_desc">Descarta a chamada e pausa o agente</string>
+    <string name="call_route_bluetooth">BLUETOOTH</string>
+    <string name="call_route_speaker">VIVA-VOZ</string>
+    <string name="call_route_earpiece">TELEFONE</string>
+    <string name="call_alarm_badge">VOLUME DO ALARME</string>
+
+    <!-- Notifications -->
+    <string name="notif_service_channel">Conexão em segundo plano</string>
+    <string name="notif_service_desc">Mantém o Clood pronto para chamadas. Você pode desativar este canal para ocultar a notificação fixa.</string>
+    <string name="notif_service_text">Pronto para chamadas</string>
+    <string name="notif_call_channel">Chamadas recebidas do Clood</string>
+    <string name="notif_call_text">Chamada recebida do Clood</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Configurações</string>
+    <string name="settings_done">Fechar</string>
+    <string name="settings_ringtone_title">Canal de volume do toque</string>
+    <string name="settings_ringtone_opt_ring">Toque</string>
+    <string name="settings_ringtone_opt_alarm">Alarme</string>
+    <string name="settings_ringtone_desc_ring">Usa o volume de toque do celular e respeita o modo silencioso.</string>
+    <string name="settings_ringtone_desc_alarm">Usa o volume do alarme — toca mesmo com o toque do celular silenciado.</string>
+    <string name="settings_ringtone_test">Testar som</string>
+    <string name="settings_ringtone_stop">Parar</string>
+    <string name="settings_overlay_title">Tela cheia sobre outros apps</string>
+    <string name="settings_overlay_desc">Abre a tela de chamada direto ao invés de um banner enquanto usa outros apps.</string>
+    <string name="settings_notif_title">Ocultar notificação fixa</string>
+    <string name="settings_notif_desc">Desative o canal de conexão no Android; as chamadas continuam funcionando.</string>
+    <string name="settings_state_on">Ativo</string>
+    <string name="settings_state_off">Ativar</string>
+    <string name="settings_state_hidden">Oculta</string>
+    <string name="settings_state_visible">Configurar</string>
+
+    <!-- Main screen -->
+    <string name="main_cd_qr">Parear QR</string>
+    <string name="main_cd_update">Buscar atualizações</string>
+    <string name="main_cd_settings">Configurações</string>
+</resources>

@@ -22,6 +22,7 @@ import {
   getStatus,
   hangupActiveCall,
   onAudioLevelEvent,
+  onCallErrorEvent,
   onStatusEvent,
   saveConfig,
   startTestCall,
@@ -70,7 +71,12 @@ export function App() {
       gotAudio = true;
       setAudio(level);
     });
-    void Promise.all([statusListener, audioListener]).then(async () => {
+    const callErrorListener = onCallErrorEvent((err) => {
+      if (disposed) return;
+      setToast(err);
+      window.setTimeout(() => setToast((cur) => (cur === err ? null : cur)), 5000);
+    });
+    void Promise.all([statusListener, audioListener, callErrorListener]).then(async () => {
       if (disposed) return;
       const next = await getStatus();
       if (disposed) return;
@@ -82,6 +88,7 @@ export function App() {
       disposed = true;
       void statusListener.then((unlisten) => unlisten());
       void audioListener.then((unlisten) => unlisten());
+      void callErrorListener.then((unlisten) => unlisten());
     };
   }, []);
 

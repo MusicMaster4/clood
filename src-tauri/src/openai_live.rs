@@ -73,23 +73,7 @@ async fn run_live_session_inner(
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Start GPT Live 1.1 session with NO internet tools / web search.
-    let start_evt = json!({
-        "type": "session.start",
-        "event_id": format!("evt_start_{}", Uuid::new_v4().simple()),
-        "session": {
-            "model": OPENAI_LIVE_MODEL,
-            "instructions": params.instructions,
-            "audio": {
-                "format": {
-                    "type": "audio/pcm",
-                    "rate": 24000
-                },
-                "output": {
-                    "voice": params.voice
-                }
-            }
-        }
-    });
+    let start_evt = build_session_start_event(&params);
 
     ws_tx
         .send(Message::Text(start_evt.to_string().into()))
@@ -152,18 +136,18 @@ async fn run_live_session_inner(
                             "session.started" => {
                                 session_started = true;
                                 if !params.opening_commentary.trim().is_empty() {
-                                    let greet = json!({
-                                        "type": "session.commentary.append",
-                                        "event_id": format!("evt_open_{}", Uuid::new_v4().simple()),
-                                        "content": params.opening_commentary
-                                    });
+                                    let greet = build_opening_commentary_event(&params.opening_commentary);
                                     let _ = ws_tx.send(Message::Text(greet.to_string().into())).await;
                                 }
                             }
                             "session.output_audio.delta"
                             | "response.output_audio.delta"
                             | "response.audio.delta" => {
-                                if let Some(delta_b64) = val.get("delta").and_then(|d| d.as_str()) {
+                                if let Some(delta_b64) = val
+                                    .get("delta")
+                                    .or_else(|| val.get("audio"))
+                                    .and_then(|d| d.as_str())
+                                {
                                     if let Ok(raw) = b64.decode(delta_b64) {
                                         let samples = pcm_le_bytes_to_samples(&raw);
                                         out_pcm_buf.extend_from_slice(&samples);
@@ -236,4 +220,65 @@ async fn run_live_session_inner(
     }
 
     Ok(())
+}
+
+fn build_session_start_event(params: &LiveSessionParams) -> Value {
+    json!({
+        "type": "session.start",
+        "event_id": format!("evt_start_{}", Uuid::new_v4().simple()),
+        "session": {
+            "model": OPENAI_LIVE_MODEL,
+            "instructions": params.instructions,
+            "audio": {
+                "format": {
+                    "type": "audio/pcm",
+                    "rate": 24000
+                },
+                "output": {
+                    "voice": params.voice
+                }
+            }
+        }
+    })
+}
+
+fn build_opening_commentary_event(content: &str) -> Value {
+    json!({
+        "type": "session.commentary.append",
+        "event_id": format!("evt_open_{}", Uuid::new_v4().simple()),
+        "delegation_id": Value::Null,
+        "content": content
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_commentary_includes_null_delegation_id() {
+        let evt = build_opening_commentary_event("Greet the caller.");
+        assert_eq!(evt["type"], "session.commentary.append");
+        assert!(evt.as_object().unwrap().contains_key("delegation_id"));
+        assert!(evt["delegation_id"].is_null());
+        assert_eq!(evt["content"], "Greet the caller.");
+        assert!(evt["event_id"].as_str().unwrap().starts_with("evt_open_"));
+    }
+
+    #[test]
+    fn session_start_configures_pcm_24k_and_voice() {
+        let params = LiveSessionParams {
+            api_key: "test".to_string(),
+            voice: "marin".to_string(),
+            instructions: "Be concise.".to_string(),
+            opening_commentary: String::new(),
+            codec: AudioCodec::Adpcm24k,
+        };
+        let evt = build_session_start_event(&params);
+        assert_eq!(evt["type"], "session.start");
+        assert_eq!(evt["session"]["model"], OPENAI_LIVE_MODEL);
+        assert_eq!(evt["session"]["audio"]["format"]["type"], "audio/pcm");
+        assert_eq!(evt["session"]["audio"]["format"]["rate"], 24000);
+        assert_eq!(evt["session"]["audio"]["output"]["voice"], "marin");
+    }
 }

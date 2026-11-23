@@ -41,6 +41,26 @@ impl CallStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HangupReason {
+    Normal,
+    Redial10m,
+    Cancel,
+}
+
+impl HangupReason {
+    pub fn from_wire(raw: Option<&str>) -> Self {
+        match raw.map(str::trim) {
+            Some("redial_10m") => Self::Redial10m,
+            Some("cancel") => Self::Cancel,
+            _ => Self::Normal,
+        }
+    }
+}
+
+const REDIAL_10M_DIRECTIVE: &str = "[Call invalidated by user — Redial in 10 minutes] The user chose to invalidate this call and asked you to call back in 10 minutes. Disregard everything from this call (no transcript is provided) and do not act on or continue the pending task yet. Wait 10 minutes, then place the call again.";
+const CANCEL_CALL_DIRECTIVE: &str = "[Call cancelled by user] The user chose to invalidate and cancel this call. Disregard everything from this call (no transcript is provided). Do not continue the task — stop your work right where you are and wait for the user's next instruction in text.";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CallRecord {
     pub call_id: String,
@@ -630,17 +650,44 @@ impl AppState {
             .await;
     }
 
-    pub async fn handle_phone_hangup(self: &Arc<Self>, call_id: &str) {
-        let status = {
-            let guard = self.active_call.lock().await;
-            match guard.as_ref() {
-                Some(c) if c.record.call_id == call_id && c.record.status == CallStatus::Ringing => {
-                    CallStatus::Declined
-                }
-                _ => CallStatus::Completed,
+    pub async fn handle_phone_hangup(self: &Arc<Self>, call_id: &str, reason: Option<&str>) {
+        match HangupReason::from_wire(reason) {
+            HangupReason::Redial10m => {
+                self.finish_call_with_override(
+                    call_id,
+                    CallStatus::Completed,
+                    None,
+                    false,
+                    Some(REDIAL_10M_DIRECTIVE),
+                )
+                .await;
             }
-        };
-        self.finish_call(call_id, status, None, false).await;
+            HangupReason::Cancel => {
+                self.finish_call_with_override(
+                    call_id,
+                    CallStatus::Cancelled,
+                    None,
+                    false,
+                    Some(CANCEL_CALL_DIRECTIVE),
+                )
+                .await;
+            }
+            HangupReason::Normal => {
+                let status = {
+                    let guard = self.active_call.lock().await;
+                    match guard.as_ref() {
+                        Some(c)
+                            if c.record.call_id == call_id
+                                && c.record.status == CallStatus::Ringing =>
+                        {
+                            CallStatus::Declined
+                        }
+                        _ => CallStatus::Completed,
+                    }
+                };
+                self.finish_call(call_id, status, None, false).await;
+            }
+        }
     }
 
     pub async fn hangup_call(self: &Arc<Self>, call_id: Option<&str>) -> Option<CallRecord> {
@@ -695,6 +742,18 @@ impl AppState {
         error: Option<String>,
         notify_phone: bool,
     ) -> Option<CallRecord> {
+        self.finish_call_with_override(call_id, status, error, notify_phone, None)
+            .await
+    }
+
+    async fn finish_call_with_override(
+        &self,
+        call_id: &str,
+        status: CallStatus,
+        error: Option<String>,
+        notify_phone: bool,
+        transcript_override: Option<&str>,
+    ) -> Option<CallRecord> {
         let finalized = {
             let mut guard = self.active_call.lock().await;
             let Some(active) = guard.as_ref() else {
@@ -720,6 +779,13 @@ impl AppState {
             if error.is_some() {
                 active.record.error = error;
             }
+            if let Some(override_msg) = transcript_override {
+                active.record.transcript = vec![TranscriptEntry {
+                    speaker: "user".to_string(),
+                    text: override_msg.to_string(),
+                    timestamp_ms: ended,
+                }];
+            }
             active.record.transcript_text = format_transcript(&active.record);
             let record = active.record.clone();
             let _ = active.done_tx.send(Some(record.clone()));
@@ -741,6 +807,19 @@ impl AppState {
         }
 
         self.emit_audio_level(false, 0.0).await;
+        if finalized.status == CallStatus::Failed {
+            if let Some(err) = finalized.error.as_deref() {
+                let window = self
+                    .app_handle
+                    .read()
+                    .await
+                    .as_ref()
+                    .and_then(|app| app.get_webview_window("main"));
+                if let Some(window) = window {
+                    let _ = window.emit("clood://call-error", err);
+                }
+            }
+        }
         self.emit_status().await;
         Some(finalized)
     }
@@ -882,4 +961,120 @@ fn load_all_persisted_calls() -> Vec<CallRecord> {
         .collect();
     list.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
     list
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn seed_active_call(state: &Arc<AppState>, call_id: &str) -> watch::Receiver<Option<CallRecord>> {
+        let (done_tx, done_rx) = watch::channel(None);
+        let record = CallRecord {
+            call_id: call_id.to_string(),
+            caller_name: "Clood".to_string(),
+            status: CallStatus::Active,
+            context: "Test context".to_string(),
+            started_at_ms: 1_000,
+            answered_at_ms: Some(2_000),
+            ended_at_ms: None,
+            duration_sec: 0,
+            transcript: vec![
+                TranscriptEntry {
+                    speaker: "agent".to_string(),
+                    text: "Should I deploy now?".to_string(),
+                    timestamp_ms: 2_500,
+                },
+                TranscriptEntry {
+                    speaker: "user".to_string(),
+                    text: "Wait, hold on, let me think.".to_string(),
+                    timestamp_ms: 3_000,
+                },
+            ],
+            transcript_text: String::new(),
+            error: None,
+        };
+        *state.active_call.lock().await = Some(ActiveCallRuntime {
+            record,
+            voice: "marin".to_string(),
+            codec: AudioCodec::Adpcm24k,
+            instructions: String::new(),
+            opening_commentary: String::new(),
+            max_duration_sec: 600,
+            mic_tx: None,
+            stop_tx: None,
+            done_tx,
+        });
+        state
+            .finished_waiters
+            .lock()
+            .await
+            .insert(call_id.to_string(), done_rx.clone());
+        done_rx
+    }
+
+    #[test]
+    fn hangup_reason_parses_wire_values() {
+        assert_eq!(HangupReason::from_wire(None), HangupReason::Normal);
+        assert_eq!(HangupReason::from_wire(Some("")), HangupReason::Normal);
+        assert_eq!(HangupReason::from_wire(Some("other")), HangupReason::Normal);
+        assert_eq!(HangupReason::from_wire(Some("redial_10m")), HangupReason::Redial10m);
+        assert_eq!(HangupReason::from_wire(Some("cancel")), HangupReason::Cancel);
+    }
+
+    #[tokio::test]
+    async fn redial_10m_hangup_discards_transcript_and_sends_redial_directive() {
+        let state = AppState::new();
+        let call_id = format!("test_redial_{}", Uuid::new_v4().simple());
+        let rx = seed_active_call(&state, &call_id).await;
+
+        state.handle_phone_hangup(&call_id, Some("redial_10m")).await;
+
+        let finalized = rx.borrow().clone().expect("finalized call record");
+        let _ = state.delete_call(&call_id);
+
+        assert_eq!(finalized.status, CallStatus::Completed);
+        assert_eq!(finalized.transcript.len(), 1);
+        assert_eq!(finalized.transcript[0].speaker, "user");
+        assert_eq!(finalized.transcript[0].text, REDIAL_10M_DIRECTIVE);
+        assert!(!finalized.transcript_text.contains("Should I deploy now?"));
+        assert!(!finalized.transcript_text.contains("Wait, hold on"));
+        assert!(finalized.transcript_text.contains("10 minutes"));
+    }
+
+    #[tokio::test]
+    async fn cancel_hangup_discards_transcript_and_marks_cancelled() {
+        let state = AppState::new();
+        let call_id = format!("test_cancel_{}", Uuid::new_v4().simple());
+        let rx = seed_active_call(&state, &call_id).await;
+
+        state.handle_phone_hangup(&call_id, Some("cancel")).await;
+
+        let finalized = rx.borrow().clone().expect("finalized call record");
+        let _ = state.delete_call(&call_id);
+
+        assert_eq!(finalized.status, CallStatus::Cancelled);
+        assert_eq!(finalized.transcript.len(), 1);
+        assert_eq!(finalized.transcript[0].speaker, "user");
+        assert_eq!(finalized.transcript[0].text, CANCEL_CALL_DIRECTIVE);
+        assert!(!finalized.transcript_text.contains("Should I deploy now?"));
+        assert!(!finalized.transcript_text.contains("Wait, hold on"));
+        assert!(finalized.transcript_text.contains("cancel"));
+    }
+
+    #[tokio::test]
+    async fn normal_hangup_preserves_transcript() {
+        let state = AppState::new();
+        let call_id = format!("test_normal_{}", Uuid::new_v4().simple());
+        let rx = seed_active_call(&state, &call_id).await;
+
+        state.handle_phone_hangup(&call_id, None).await;
+
+        let finalized = rx.borrow().clone().expect("finalized call record");
+        let _ = state.delete_call(&call_id);
+
+        assert_eq!(finalized.status, CallStatus::Completed);
+        assert_eq!(finalized.transcript.len(), 2);
+        assert!(finalized.transcript_text.contains("Should I deploy now?"));
+        assert!(finalized.transcript_text.contains("Wait, hold on, let me think."));
+    }
 }

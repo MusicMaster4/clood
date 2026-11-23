@@ -1,5 +1,6 @@
 package dev.slop.clood
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -76,5 +77,104 @@ class CloodUnitTest {
         assertFalse(parsed.isNewerThan(42))
         assertTrue(UpdateClient.manifestUrl("testing").contains("channel-testing"))
         assertTrue(UpdateClient.manifestUrl("stable").contains("/releases/latest/download/"))
+    }
+
+    @Test
+    fun ringtoneStreamDefaultsToRingtoneAndParsesAlarm() {
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref(null))
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref(""))
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref("ringtone"))
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref("unknown"))
+        assertEquals(RingtoneStream.ALARM, RingtoneStream.fromPref("alarm"))
+        assertEquals(RingtoneStream.ALARM, RingtoneStream.fromPref("ALARM"))
+    }
+
+    @Test
+    fun hangupPayloadIncludesOptionalReasonOnlyForActiveCalls() {
+        val normal = JSONObject(CloodConnectionService.buildHangupPayload("call_1", isRinging = false))
+        assertEquals("hangup", normal.getString("type"))
+        assertEquals("call_1", normal.getString("call_id"))
+        assertFalse(normal.has("reason"))
+
+        val redial = JSONObject(
+            CloodConnectionService.buildHangupPayload(
+                "call_2",
+                isRinging = false,
+                reason = CloodConnectionService.HANGUP_REASON_REDIAL_10M,
+            ),
+        )
+        assertEquals("hangup", redial.getString("type"))
+        assertEquals("redial_10m", redial.getString("reason"))
+
+        val cancel = JSONObject(
+            CloodConnectionService.buildHangupPayload(
+                "call_3",
+                isRinging = false,
+                reason = CloodConnectionService.HANGUP_REASON_CANCEL,
+            ),
+        )
+        assertEquals("hangup", cancel.getString("type"))
+        assertEquals("cancel", cancel.getString("reason"))
+
+        val ringing = JSONObject(
+            CloodConnectionService.buildHangupPayload(
+                "call_4",
+                isRinging = true,
+                reason = CloodConnectionService.HANGUP_REASON_CANCEL,
+            ),
+        )
+        assertEquals("call_decline", ringing.getString("type"))
+        assertFalse(ringing.has("reason"))
+    }
+
+    @Test
+    fun endCallRadialOverlayResolvesBubbleTargetsAccurately() {
+        val (redial, cancel) = EndCallRadialOverlay.computeBubbleCenters(
+            anchorX = 540f,
+            anchorY = 1900f,
+            viewWidth = 1080f,
+            density = 3f,
+        )
+        assertTrue(redial.first < 540f)
+        assertTrue(cancel.first > 540f)
+        assertEquals(redial.second, cancel.second, 0.01f)
+
+        val hitRadius = 200f
+        assertEquals(
+            EndCallOption.REDIAL_10M,
+            EndCallRadialOverlay.resolveTarget(
+                redial.first + 10f,
+                redial.second - 10f,
+                redial.first,
+                redial.second,
+                cancel.first,
+                cancel.second,
+                hitRadius,
+            ),
+        )
+        assertEquals(
+            EndCallOption.CANCEL,
+            EndCallRadialOverlay.resolveTarget(
+                cancel.first - 15f,
+                cancel.second + 15f,
+                redial.first,
+                redial.second,
+                cancel.first,
+                cancel.second,
+                hitRadius,
+            ),
+        )
+        assertEquals(
+            EndCallOption.NONE,
+            EndCallRadialOverlay.resolveTarget(
+                540f,
+                1900f,
+                redial.first,
+                redial.second,
+                cancel.first,
+                cancel.second,
+                hitRadius,
+            ),
+        )
     }
 }

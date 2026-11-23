@@ -75,6 +75,7 @@ export function HistoryDrawer({ open, onClose }: HistoryDrawerProps) {
                     </div>
                     {active && (
                       <div className="history-detail">
+                        {c.error && <div className="call-error">{c.error}</div>}
                         <div className="transcript-box">
                           {c.transcript.length > 0 ? (
                             c.transcript.map((entry, idx) => (

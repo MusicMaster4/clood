@@ -641,6 +641,17 @@ button:disabled {
   gap: 10px;
 }
 
+.call-error {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: text;
+}
+
 .transcript-box {
   max-height: 240px;
   overflow-y: auto;
