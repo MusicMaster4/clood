@@ -1,4 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Clood</string>
+
+    <!-- Call Screen -->
+    <string name="call_incoming_badge">INCOMING CALL</string>
+    <string name="call_live_badge">LIVE</string>
+    <string name="call_muted_badge">MUTED</string>
+    <string name="call_slide_hint">Slide to answer or decline</string>
+    <string name="call_slide_answer">Answer</string>
+    <string name="call_slide_decline">Decline</string>
+    <string name="call_status_speaking">SPEAKING</string>
+    <string name="call_status_listening">LISTENING</string>
+    <string name="call_status_muted">MICROPHONE MUTED</string>
+    <string name="call_mute">Mute</string>
+    <string name="call_muted">Muted</string>
+    <string name="call_speaker">Speaker</string>
+    <string name="call_earpiece">Phone</string>
+    <string name="call_bluetooth">Bluetooth</string>
+    <string name="call_bluetooth_on">BT On</string>
+    <string name="call_end">End</string>
+    <string name="call_route_bluetooth">BLUETOOTH</string>
+    <string name="call_route_speaker">SPEAKER</string>
+    <string name="call_route_earpiece">EARPIECE</string>
+    <string name="call_alarm_badge">ALARM VOLUME</string>
+
+    <!-- Notifications -->
+    <string name="notif_service_channel">Background Connection</string>
+    <string name="notif_service_desc">Keeps Clood ready for incoming calls. You can turn this off to hide the persistent notification.</string>
+    <string name="notif_service_text">Ready for calls</string>
+    <string name="notif_call_channel">Incoming Clood Calls</string>
+    <string name="notif_call_text">Incoming Clood call</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_done">Done</string>
+    <string name="settings_ringtone_title">Ringtone volume channel</string>
+    <string name="settings_ringtone_opt_ring">Ringtone</string>
+    <string name="settings_ringtone_opt_alarm">Alarm</string>
+    <string name="settings_ringtone_desc_ring">Uses the phone ringtone volume and respects silent mode.</string>
+    <string name="settings_ringtone_desc_alarm">Uses alarm volume so calls still ring even when the phone is silenced.</string>
+    <string name="settings_ringtone_test">Test sound</string>
+    <string name="settings_ringtone_stop">Stop</string>
+    <string name="settings_overlay_title">Full-screen calls over apps</string>
+    <string name="settings_overlay_desc">Open the call screen directly instead of a top banner while using other apps.</string>
+    <string name="settings_notif_title">Hide persistent notification</string>
+    <string name="settings_notif_desc">Disable the background connection channel in Android settings; calls keep working.</string>
+    <string name="settings_state_on">On</string>
+    <string name="settings_state_off">Off</string>
+    <string name="settings_state_hidden">Hidden</string>
+    <string name="settings_state_visible">Configure</string>
+
+    <!-- Main screen -->
+    <string name="main_cd_qr">Pair QR</string>
+    <string name="main_cd_update">Check updates</string>
+    <string name="main_cd_settings">Settings</string>
 </resources>

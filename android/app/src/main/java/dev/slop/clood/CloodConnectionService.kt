@@ -1,6 +1,7 @@
 package dev.slop.clood
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -91,6 +92,8 @@ class CloodConnectionService : Service() {
     private var destroyed = false
     private var ringWakeLock: PowerManager.WakeLock? = null
     private var activeCodec: AudioCodecType = AudioCodecType.ADPCM_24K
+    private var micFgsActive = false
+    private var pendingIncomingNotifRunnable: Runnable? = null
 
     private val silenceReset = Runnable {
         CloodSessionBus.publishAudioLevel(false, 0f)
@@ -104,17 +107,28 @@ class CloodConnectionService : Service() {
         super.onCreate()
         store = ConfigStore(this)
         audioEngine = CallAudioEngine(this)
+        startMinimalForeground(includeMic = false)
+    }
+
+    private fun startMinimalForeground(includeMic: Boolean) {
         val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            if (includeMic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            } else {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            }
         } else {
             0
         }
-        ServiceCompat.startForeground(
-            this,
-            NOTIF_ID_SERVICE,
-            buildServiceNotification(ConnectionState.CONNECTING),
-            fgsType,
-        )
+        runCatching {
+            ServiceCompat.startForeground(
+                this,
+                NOTIF_ID_SERVICE,
+                buildServiceNotification(),
+                fgsType,
+            )
+            micFgsActive = includeMic
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -141,6 +155,12 @@ class CloodConnectionService : Service() {
             }
             ACTION_HANGUP -> {
                 teardownCall(notifyPc = true)
+            }
+            ACTION_REPOST_RINGING_NOTIF -> {
+                val current = CloodSessionBus.activeCall
+                if (current != null && current.phase == CallPhase.RINGING && !CallActivity.isForeground) {
+                    postIncomingCallNotification(current)
+                }
             }
             ACTION_TOGGLE_MUTE -> {
                 val current = CloodSessionBus.activeCall ?: return START_STICKY
@@ -190,6 +210,7 @@ class CloodConnectionService : Service() {
 
     override fun onDestroy() {
         destroyed = true
+        clearPendingIncomingNotif()
         mainHandler.removeCallbacksAndMessages(null)
         teardownCall(notifyPc = false)
         socket?.close(1000, "Service stopped")
@@ -208,14 +229,12 @@ class CloodConnectionService : Service() {
         val cfg = store.load()
         if (cfg == null) {
             CloodSessionBus.publishConnection(ConnectionState.UNPAIRED)
-            updateServiceNotification(ConnectionState.UNPAIRED)
             stopSelf()
             return
         }
 
         activeCodec = cfg.codec
         CloodSessionBus.publishConnection(ConnectionState.CONNECTING)
-        updateServiceNotification(ConnectionState.CONNECTING)
 
         val device = URLEncoder.encode(Build.MODEL ?: "Android", "UTF-8")
         val token = URLEncoder.encode(cfg.token, "UTF-8")
@@ -228,7 +247,6 @@ class CloodConnectionService : Service() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     reconnectDelayMs = 2000L
                     CloodSessionBus.publishConnection(ConnectionState.CONNECTED)
-                    updateServiceNotification(ConnectionState.CONNECTED)
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -252,7 +270,6 @@ class CloodConnectionService : Service() {
                     teardownCall(notifyPc = false)
                     if (response?.code == 401 || response?.code == 403) {
                         CloodSessionBus.publishConnection(ConnectionState.OFFLINE)
-                        updateServiceNotification(ConnectionState.OFFLINE)
                         return
                     }
                     scheduleReconnect()
@@ -264,7 +281,6 @@ class CloodConnectionService : Service() {
     private fun scheduleReconnect() {
         if (destroyed) return
         CloodSessionBus.publishConnection(ConnectionState.OFFLINE)
-        updateServiceNotification(ConnectionState.OFFLINE)
         val delay = reconnectDelayMs
         reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(20_000L)
         mainHandler.postDelayed(reconnectRunnable, delay)
@@ -301,9 +317,8 @@ class CloodConnectionService : Service() {
                 )
                 CloodSessionBus.publishCall(incoming)
                 acquireWakeLock()
-                audioEngine.startRingtone()
-                postIncomingCallNotification(incoming)
-                launchCallActivity(incoming)
+                audioEngine.startRingtone(store.loadRingtoneStream())
+                presentIncomingCall(incoming)
             }
             "call_ended" -> {
                 val callId = json.optString("call_id")
@@ -320,6 +335,43 @@ class CloodConnectionService : Service() {
                 stopSelf()
             }
         }
+    }
+
+    /**
+     * Prefer turning the screen straight into [CallActivity] without a duplicate heads-up banner:
+     * - When screen is off/locked: post the full-screen-intent notification so Android wakes & opens
+     *   [CallActivity]; as soon as [CallActivity.onResume] fires, it dismisses the heads-up notification.
+     * - When screen is awake & unlocked: launch [CallActivity] directly first; only fall back to the
+     *   notification if Android blocked background activity launch after a brief grace window.
+     */
+    private fun presentIncomingCall(incoming: ActiveCallUi) {
+        clearPendingIncomingNotif()
+        val pm = getSystemService(PowerManager::class.java)
+        val km = getSystemService(KeyguardManager::class.java)
+        val screenOffOrLocked = pm?.isInteractive != true || km?.isKeyguardLocked == true
+
+        if (screenOffOrLocked) {
+            postIncomingCallNotification(incoming)
+            launchCallActivity(incoming)
+        } else {
+            launchCallActivity(incoming)
+            val fallback = Runnable {
+                val current = CloodSessionBus.activeCall
+                if (current?.callId == incoming.callId &&
+                    current.phase == CallPhase.RINGING &&
+                    !CallActivity.isForeground
+                ) {
+                    postIncomingCallNotification(current)
+                }
+            }
+            pendingIncomingNotifRunnable = fallback
+            mainHandler.postDelayed(fallback, 220L)
+        }
+    }
+
+    private fun clearPendingIncomingNotif() {
+        pendingIncomingNotifRunnable?.let { mainHandler.removeCallbacks(it) }
+        pendingIncomingNotifRunnable = null
     }
 
     private fun handleServerAudio(bytes: ByteArray) {
@@ -339,6 +391,7 @@ class CloodConnectionService : Service() {
         val current = CloodSessionBus.activeCall ?: return
         if (current.callId != callId || current.phase != CallPhase.RINGING) return
 
+        clearPendingIncomingNotif()
         cancelIncomingCallNotification()
         audioEngine.stopRingtone()
         releaseWakeLock()
@@ -363,21 +416,16 @@ class CloodConnectionService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         ) {
-            runCatching {
-                ServiceCompat.startForeground(
-                    this,
-                    NOTIF_ID_SERVICE,
-                    buildServiceNotification(ConnectionState.CONNECTED),
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
-                )
-            }
+            startMinimalForeground(includeMic = true)
         }
 
         audioEngine.startCallAudio(activeCodec, initialRoute) { encodedFrame ->
             socket?.send(encodedFrame.toByteString(0, encodedFrame.size))
         }
 
-        launchCallActivity(active)
+        if (!CallActivity.isForeground) {
+            launchCallActivity(active)
+        }
     }
 
     private fun declineCall(callId: String) {
@@ -401,11 +449,15 @@ class CloodConnectionService : Service() {
                     .toString(),
             )
         }
+        clearPendingIncomingNotif()
         mainHandler.removeCallbacks(silenceReset)
         audioEngine.stopRingtone()
         audioEngine.stopCallAudio()
         cancelIncomingCallNotification()
         releaseWakeLock()
+        if (micFgsActive) {
+            startMinimalForeground(includeMic = false)
+        }
         CloodSessionBus.publishAudioLevel(false, 0f)
         CloodSessionBus.publishCall(null)
     }
@@ -450,12 +502,13 @@ class CloodConnectionService : Service() {
         val notif = NotificationCompat.Builder(this, CloodApp.CHANNEL_INCOMING_CALL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(call.callerName)
-            .setContentText("Incoming Clood call")
+            .setContentText(getString(R.string.notif_call_text))
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setAutoCancel(false)
+            .setContentIntent(fullScreenPending)
             .setFullScreenIntent(fullScreenPending, true)
             .setStyle(NotificationCompat.CallStyle.forIncomingCall(caller, declinePending, answerPending))
             .build()
@@ -475,32 +528,25 @@ class CloodConnectionService : Service() {
         runCatching { startActivity(intent) }
     }
 
-    private fun buildServiceNotification(state: ConnectionState): Notification {
+    private fun buildServiceNotification(): Notification {
         val openPending = PendingIntent.getActivity(
             this,
             1,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val statusLabel = when (state) {
-            ConnectionState.CONNECTED -> "Tailscale ready"
-            ConnectionState.CONNECTING -> "Connecting…"
-            ConnectionState.OFFLINE -> "Waiting for PC…"
-            ConnectionState.UNPAIRED -> "Not paired"
-        }
         return NotificationCompat.Builder(this, CloodApp.CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Clood")
-            .setContentText(statusLabel)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.notif_service_text))
             .setContentIntent(openPending)
-            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .setSilent(true)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFERRED)
             .build()
-    }
-
-    private fun updateServiceNotification(state: ConnectionState) {
-        getSystemService(NotificationManager::class.java)
-            ?.notify(NOTIF_ID_SERVICE, buildServiceNotification(state))
     }
 
     private fun acquireWakeLock() {
@@ -528,6 +574,7 @@ class CloodConnectionService : Service() {
         const val ACTION_ANSWER = "dev.slop.clood.ANSWER"
         const val ACTION_DECLINE = "dev.slop.clood.DECLINE"
         const val ACTION_HANGUP = "dev.slop.clood.HANGUP"
+        const val ACTION_REPOST_RINGING_NOTIF = "dev.slop.clood.REPOST_RINGING_NOTIF"
         const val ACTION_TOGGLE_MUTE = "dev.slop.clood.TOGGLE_MUTE"
         const val ACTION_TOGGLE_SPEAKER = "dev.slop.clood.TOGGLE_SPEAKER"
         const val ACTION_TOGGLE_BLUETOOTH = "dev.slop.clood.TOGGLE_BLUETOOTH"
@@ -535,6 +582,10 @@ class CloodConnectionService : Service() {
 
         private const val NOTIF_ID_SERVICE = 1001
         private const val NOTIF_ID_INCOMING_CALL = 1002
+
+        fun dismissIncomingNotification(context: Context) {
+            context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID_INCOMING_CALL)
+        }
 
         fun start(context: Context, action: String? = null, callId: String? = null) {
             val intent = Intent(context, CloodConnectionService::class.java).apply {

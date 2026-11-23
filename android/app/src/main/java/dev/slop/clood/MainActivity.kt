@@ -1,6 +1,7 @@
 package dev.slop.clood
 
 import android.Manifest
+import android.app.Dialog
 import android.app.DownloadManager
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
@@ -9,14 +10,21 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.ViewGroup
+import android.view.Window
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.LinearLayout
@@ -27,17 +35,23 @@ import androidx.core.content.ContextCompat
 import kotlin.concurrent.thread
 
 /**
- * Minimalist dark home screen centered on the Clood orb, QR pairing, and channel-isolated updates.
+ * Minimalist dark home screen centered on the Clood orb, QR pairing,
+ * audio/notification settings, and channel-isolated updates.
  */
 class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
     private lateinit var store: ConfigStore
     private lateinit var updater: AppUpdater
+    private lateinit var previewAudio: CallAudioEngine
     private lateinit var statusDot: View
     private lateinit var nameText: TextView
     private lateinit var versionText: TextView
     private lateinit var orbView: OrbGLView
     private lateinit var cueText: TextView
     private lateinit var permissionChip: TextView
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var stopPreviewRunnable: Runnable? = null
+    private var settingsDialog: Dialog? = null
 
     private val permLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -65,6 +79,7 @@ class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
         super.onCreate(savedInstanceState)
         store = ConfigStore(this)
         updater = AppUpdater(this)
+        previewAudio = CallAudioEngine(this)
         setContentView(buildUi())
 
         requestRuntimePermissionsIfNeeded()
@@ -86,6 +101,7 @@ class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
     }
 
     override fun onStop() {
+        stopRingtonePreview()
         CloodSessionBus.unregister(this)
         super.onStop()
     }
@@ -105,6 +121,9 @@ class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
     }
 
     override fun onDestroy() {
+        stopRingtonePreview()
+        settingsDialog?.dismiss()
+        settingsDialog = null
         runCatching { unregisterReceiver(downloadReceiver) }
         super.onDestroy()
     }
@@ -229,6 +248,327 @@ class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
         }
     }
 
+    private fun stopRingtonePreview() {
+        stopPreviewRunnable?.let { handler.removeCallbacks(it) }
+        stopPreviewRunnable = null
+        previewAudio.stopRingtone()
+    }
+
+    private fun showSettingsDialog() {
+        settingsDialog?.dismiss()
+        stopRingtonePreview()
+
+        val dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+        }
+        settingsDialog = dialog
+
+        var selectedStream = store.loadRingtoneStream()
+        var previewPlaying = false
+
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(22), dp(22), dp(20))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(26).toFloat()
+                setColor(Color.parseColor("#111116"))
+                setStroke(dp(1), Color.parseColor("#262632"))
+            }
+        }
+
+        // Header
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = dp(20) }
+        }
+        val titleTxt = TextView(this).apply {
+            text = getString(R.string.settings_title)
+            textSize = 18f
+            setTextColor(Color.parseColor("#FAFAFA"))
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val doneBtn = TextView(this).apply {
+            text = getString(R.string.settings_done)
+            textSize = 13f
+            setTextColor(Color.parseColor("#A1A1AA"))
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.parseColor("#1A1A22"))
+            }
+            setOnClickListener { dialog.dismiss() }
+        }
+        headerRow.addView(titleTxt)
+        headerRow.addView(doneBtn)
+        card.addView(headerRow)
+
+        // Section 1: Ringtone Volume Channel (Ringtone vs Alarm)
+        val ringSectionTitle = TextView(this).apply {
+            text = getString(R.string.settings_ringtone_title)
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#F4F4F5"))
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        val ringSectionDesc = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.parseColor("#8A8A96"))
+            setPadding(0, dp(4), 0, dp(12))
+        }
+
+        val segmentTrack = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(Color.parseColor("#181820"))
+                setStroke(dp(1), Color.parseColor("#252532"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+        }
+
+        val optRing = TextView(this).apply {
+            text = getString(R.string.settings_ringtone_opt_ring)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val optAlarm = TextView(this).apply {
+            text = getString(R.string.settings_ringtone_opt_alarm)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        segmentTrack.addView(optRing)
+        segmentTrack.addView(optAlarm)
+
+        val testBtn = TextView(this).apply {
+            text = getString(R.string.settings_ringtone_test)
+            textSize = 12f
+            setTextColor(Color.parseColor("#D4D4D8"))
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setPadding(dp(14), dp(7), dp(14), dp(7))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.parseColor("#1A1A22"))
+                setStroke(dp(1), Color.parseColor("#2A2A36"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(10) }
+        }
+
+        fun renderSegmentState() {
+            val isAlarm = selectedStream == RingtoneStream.ALARM
+            optRing.background = if (!isAlarm) pillSelectedBg() else null
+            optRing.setTextColor(if (!isAlarm) Color.parseColor("#09090B") else Color.parseColor("#A1A1AA"))
+            optAlarm.background = if (isAlarm) pillSelectedBg() else null
+            optAlarm.setTextColor(if (isAlarm) Color.parseColor("#09090B") else Color.parseColor("#A1A1AA"))
+            ringSectionDesc.text = getString(
+                if (isAlarm) R.string.settings_ringtone_desc_alarm else R.string.settings_ringtone_desc_ring,
+            )
+            testBtn.text = getString(
+                if (previewPlaying) R.string.settings_ringtone_stop else R.string.settings_ringtone_test,
+            )
+        }
+
+        optRing.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            selectedStream = RingtoneStream.RINGTONE
+            store.saveRingtoneStream(selectedStream)
+            if (previewPlaying) {
+                stopRingtonePreview()
+                previewPlaying = false
+            }
+            renderSegmentState()
+        }
+        optAlarm.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            selectedStream = RingtoneStream.ALARM
+            store.saveRingtoneStream(selectedStream)
+            if (previewPlaying) {
+                stopRingtonePreview()
+                previewPlaying = false
+            }
+            renderSegmentState()
+        }
+        testBtn.setOnClickListener {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            if (previewPlaying) {
+                stopRingtonePreview()
+                previewPlaying = false
+                renderSegmentState()
+            } else {
+                previewPlaying = true
+                renderSegmentState()
+                previewAudio.startRingtone(selectedStream)
+                val autoStop = Runnable {
+                    stopRingtonePreview()
+                    previewPlaying = false
+                    renderSegmentState()
+                }
+                stopPreviewRunnable = autoStop
+                handler.postDelayed(autoStop, 2200L)
+            }
+        }
+        renderSegmentState()
+
+        card.addView(ringSectionTitle)
+        card.addView(ringSectionDesc)
+        card.addView(segmentTrack)
+        card.addView(testBtn)
+        card.addView(settingsDivider())
+
+        // Section 2: Display over other apps (Full-screen call takeover even while unlocked in other apps)
+        val canOverlay = Settings.canDrawOverlays(this)
+        card.addView(
+            settingsActionRow(
+                title = getString(R.string.settings_overlay_title),
+                desc = getString(R.string.settings_overlay_desc),
+                badgeText = getString(if (canOverlay) R.string.settings_state_on else R.string.settings_state_off),
+                badgePositive = canOverlay,
+            ) {
+                dialog.dismiss()
+                runCatching {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:$packageName"),
+                        ),
+                    )
+                }
+            },
+        )
+        card.addView(settingsDivider())
+
+        // Section 3: Hide persistent background notification channel
+        val nm = getSystemService(NotificationManager::class.java)
+        val serviceChannel = nm?.getNotificationChannel(CloodApp.CHANNEL_SERVICE)
+        val notifHidden = serviceChannel?.importance == NotificationManager.IMPORTANCE_NONE
+        card.addView(
+            settingsActionRow(
+                title = getString(R.string.settings_notif_title),
+                desc = getString(R.string.settings_notif_desc),
+                badgeText = getString(if (notifHidden) R.string.settings_state_hidden else R.string.settings_state_visible),
+                badgePositive = notifHidden,
+            ) {
+                dialog.dismiss()
+                runCatching {
+                    startActivity(
+                        Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                            putExtra(Settings.EXTRA_CHANNEL_ID, CloodApp.CHANNEL_SERVICE)
+                        },
+                    )
+                }
+            },
+        )
+
+        dialog.setOnDismissListener {
+            stopRingtonePreview()
+            if (settingsDialog === dialog) settingsDialog = null
+        }
+
+        val container = FrameLayout(this).apply {
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            addView(
+                card,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                ),
+            )
+        }
+        dialog.setContentView(container)
+        dialog.window?.apply {
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setGravity(Gravity.BOTTOM)
+            setDimAmount(0.68f)
+        }
+        dialog.show()
+    }
+
+    private fun pillSelectedBg() = GradientDrawable().apply {
+        cornerRadius = dp(12).toFloat()
+        setColor(Color.parseColor("#F4F4F5"))
+    }
+
+    private fun settingsDivider() = View(this).apply {
+        setBackgroundColor(Color.parseColor("#1E1E28"))
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(1),
+        ).apply {
+            topMargin = dp(18)
+            bottomMargin = dp(18)
+        }
+    }
+
+    private fun settingsActionRow(
+        title: String,
+        desc: String,
+        badgeText: String,
+        badgePositive: Boolean,
+        onClick: () -> Unit,
+    ): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                onClick()
+            }
+        }
+        val textCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { marginEnd = dp(12) }
+        }
+        val titleView = TextView(this).apply {
+            text = title
+            textSize = 13.5f
+            setTextColor(Color.parseColor("#F4F4F5"))
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+        }
+        val descView = TextView(this).apply {
+            text = desc
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#8A8A96"))
+            setPadding(0, dp(3), 0, 0)
+        }
+        textCol.addView(titleView)
+        textCol.addView(descView)
+
+        val badge = TextView(this).apply {
+            text = badgeText
+            textSize = 11.5f
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            setTextColor(if (badgePositive) Color.parseColor("#34D399") else Color.parseColor("#E4E4E7"))
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(if (badgePositive) Color.parseColor("#142822") else Color.parseColor("#1C1C26"))
+                setStroke(dp(1), if (badgePositive) Color.parseColor("#1E4D3E") else Color.parseColor("#2B2B38"))
+            }
+        }
+        row.addView(textCol)
+        row.addView(badge)
+        return row
+    }
+
     private fun buildUi(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -318,14 +658,18 @@ class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
             }
         }
 
-        val qrBtn = dockButton(R.drawable.ic_qr, "Pair QR") {
+        val qrBtn = dockButton(R.drawable.ic_qr, getString(R.string.main_cd_qr)) {
             qrLauncher.launch(Intent(this, QrScannerActivity::class.java))
         }
-        val updateBtn = dockButton(R.drawable.ic_update, "Check updates") {
+        val settingsBtn = dockButton(R.drawable.ic_settings, getString(R.string.main_cd_settings)) {
+            showSettingsDialog()
+        }
+        val updateBtn = dockButton(R.drawable.ic_update, getString(R.string.main_cd_update)) {
             checkForUpdates()
         }
 
-        dock.addView(qrBtn, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(12) })
+        dock.addView(qrBtn, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(10) })
+        dock.addView(settingsBtn, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginEnd = dp(10) })
         dock.addView(updateBtn, LinearLayout.LayoutParams(dp(48), dp(48)))
 
         root.addView(topBar)

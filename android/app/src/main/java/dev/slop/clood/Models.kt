@@ -32,6 +32,16 @@ enum class AudioRoute {
     BLUETOOTH,
 }
 
+enum class RingtoneStream(val prefValue: String) {
+    RINGTONE("ringtone"),
+    ALARM("alarm");
+
+    companion object {
+        fun fromPref(value: String?): RingtoneStream =
+            if (value.equals("alarm", ignoreCase = true)) ALARM else RINGTONE
+    }
+}
+
 data class PairingConfig(
     val host: String,
     val port: Int,

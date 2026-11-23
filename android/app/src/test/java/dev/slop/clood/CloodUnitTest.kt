@@ -77,4 +77,14 @@ class CloodUnitTest {
         assertTrue(UpdateClient.manifestUrl("testing").contains("channel-testing"))
         assertTrue(UpdateClient.manifestUrl("stable").contains("/releases/latest/download/"))
     }
+
+    @Test
+    fun ringtoneStreamDefaultsToRingtoneAndParsesAlarm() {
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref(null))
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref(""))
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref("ringtone"))
+        assertEquals(RingtoneStream.RINGTONE, RingtoneStream.fromPref("unknown"))
+        assertEquals(RingtoneStream.ALARM, RingtoneStream.fromPref("alarm"))
+        assertEquals(RingtoneStream.ALARM, RingtoneStream.fromPref("ALARM"))
+    }
 }

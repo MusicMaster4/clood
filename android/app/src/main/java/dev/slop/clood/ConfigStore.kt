@@ -39,8 +39,22 @@ class ConfigStore(context: Context) {
         editor.apply()
     }
 
+    fun loadRingtoneStream(): RingtoneStream =
+        RingtoneStream.fromPref(prefs.getString(KEY_RINGTONE_STREAM, RingtoneStream.RINGTONE.prefValue))
+
+    fun saveRingtoneStream(stream: RingtoneStream) {
+        prefs.edit().putString(KEY_RINGTONE_STREAM, stream.prefValue).apply()
+    }
+
     fun clear() {
-        prefs.edit().clear().apply()
+        prefs.edit()
+            .remove(KEY_HOST)
+            .remove(KEY_PORT)
+            .remove(KEY_TOKEN)
+            .remove(KEY_NAME)
+            .remove(KEY_COLOR)
+            .remove(KEY_CODEC)
+            .apply()
     }
 
     companion object {
@@ -50,5 +64,6 @@ class ConfigStore(context: Context) {
         private const val KEY_NAME = "agent_name"
         private const val KEY_COLOR = "orb_color"
         private const val KEY_CODEC = "audio_codec"
+        private const val KEY_RINGTONE_STREAM = "ringtone_stream"
     }
 }
