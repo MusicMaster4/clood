@@ -1,0 +1,363 @@
+name: Release
+
+# Self-versioning native builds for Clood's two isolated release channels:
+#   - push to `main`    -> stable release  vX.Y.Z           (marked "Latest")
+#   - push to `testing` -> beta release    vX.Y.Z-testing.N (marked "Pre-release" + `channel-testing` pointer)
+#
+# Stable builds only read `/releases/latest/download/{latest.json,android-update.json}`.
+# Beta builds only read `/releases/download/channel-testing/{latest.json,android-update-beta.json}`.
+
+on:
+  push:
+    branches:
+      - main
+      - testing
+    paths-ignore:
+      - "**.md"
+      - ".gitignore"
+      - "docs/**"
+      - "LICENSE"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version increment (relative to the latest stable release)"
+        type: choice
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      publish:
+        description: "Publish a release (uncheck for a dry-run artifact build)"
+        type: boolean
+        default: true
+
+run-name: Release ${{ github.ref_name }} (${{ github.ref_name == 'main' && 'stable' || 'beta' }})
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BETA_POINTER_TAG: channel-testing
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.calc.outputs.version }}
+      tag: ${{ steps.calc.outputs.tag }}
+      channel: ${{ steps.calc.outputs.channel }}
+      publish: ${{ steps.calc.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Resolve next version
+        id: calc
+        env:
+          BUMP: ${{ inputs.bump }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          node scripts/release-version.mjs --branch "$GITHUB_REF_NAME" --bump "$BUMP"
+          echo "publish=${PUBLISH:-true}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag and open draft release
+        if: steps.calc.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.calc.outputs.tag }}
+          CHANNEL: ${{ steps.calc.outputs.channel }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [ "$CHANNEL" = "testing" ]; then
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease \
+                --title "Clood $TAG (beta)" --generate-notes
+            else
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+                --title "Clood $TAG" --generate-notes
+            fi
+          fi
+
+  validate:
+    name: Validate source & tests
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux Tauri check dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Apply version and channel
+        run: |
+          node scripts/apply-version.mjs \
+            --version "${{ needs.version.outputs.version }}" \
+            --channel "${{ needs.version.outputs.channel }}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Typecheck, test, and build frontend
+        run: |
+          npm run typecheck
+          npm test
+          npm run build
+
+      - name: Run Rust unit tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
+  build-windows:
+    name: Build Windows x64 (NSIS)
+    needs: [version, validate]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: release-windows
+
+      - name: Install JS dependencies
+        run: npm ci
+
+      - name: Apply version and isolated update channel
+        run: |
+          node scripts/apply-version.mjs \
+            --version "${{ needs.version.outputs.version }}" \
+            --channel "${{ needs.version.outputs.channel }}" \
+            --repo "$GITHUB_REPOSITORY"
+
+      - name: Build signed Windows installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npx tauri build --bundles nsis
+
+      - name: Stage Windows release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          for f in src-tauri/target/release/bundle/nsis/*; do
+            if [ -f "$f" ]; then
+              cp "$f" release-assets/
+            fi
+          done
+          ls -la release-assets
+
+      - name: Upload Windows build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clood-release-windows
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 1
+
+  build-android:
+    name: Build Android APK
+    needs: [version, validate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Configure Android release signing
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -n "${KEYSTORE:-}" ]; then
+            printf '%s' "$KEYSTORE" | base64 --decode > "$RUNNER_TEMP/clood-release.p12"
+            echo "CLOOD_ANDROID_KEYSTORE=$RUNNER_TEMP/clood-release.p12" >> "$GITHUB_ENV"
+            echo "CLOOD_ANDROID_STORE_PASSWORD=$STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "CLOOD_ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "CLOOD_ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
+          fi
+
+      - name: Test and build signed APK
+        run: |
+          set -euo pipefail
+          gradle -p android :app:testDebugUnitTest :app:assembleRelease \
+            -PcloodVersionName="${{ needs.version.outputs.version }}" \
+            -PcloodVersionCode="$GITHUB_RUN_NUMBER" \
+            -PcloodChannel="${{ needs.version.outputs.channel }}"
+          mkdir -p release-assets
+          APK="android/app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          if [ "${{ needs.version.outputs.channel }}" = "testing" ]; then
+            cp "$APK" release-assets/clood-beta.apk
+          else
+            cp "$APK" release-assets/clood.apk
+          fi
+          ls -la release-assets
+
+      - name: Upload Android build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clood-release-android
+          path: release-assets/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    name: Assemble release manifests
+    needs: [version, build-windows, build-android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: clood-release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Build Windows updater manifest (latest.json)
+        run: |
+          node scripts/updater-manifest.mjs \
+            --version "${{ needs.version.outputs.version }}" \
+            --tag "${{ needs.version.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle-dir release-assets \
+            --notes "$(git log -1 --pretty=%s)"
+
+      - name: Build Android channel manifest
+        run: |
+          node scripts/android-update-manifest.mjs \
+            --channel "${{ needs.version.outputs.channel }}" \
+            --version "${{ needs.version.outputs.version }}" \
+            --version-code "$GITHUB_RUN_NUMBER" \
+            --tag "${{ needs.version.outputs.tag }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --bundle-dir release-assets
+
+      - name: Upload installers and manifests to release
+        if: needs.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.version.outputs.tag }}" \
+            release-assets/* latest.json android-update*.json \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Keep unpublished build as artifact
+        if: needs.version.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clood-${{ needs.version.outputs.channel }}-${{ needs.version.outputs.version }}
+          path: |
+            release-assets/*
+            latest.json
+            android-update*.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [version, manifest]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.version.outputs.tag }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Publish stable release
+        if: needs.version.outputs.channel == 'stable'
+        run: gh release edit "$TAG" --repo "$REPO" --draft=false --latest
+
+      - name: Publish beta release
+        if: needs.version.outputs.channel == 'testing'
+        run: gh release edit "$TAG" --repo "$REPO" --draft=false --prerelease --latest=false
+
+      - name: Update permanent beta channel pointer
+        if: needs.version.outputs.channel == 'testing'
+        run: |
+          set -euo pipefail
+          mkdir -p beta-channel
+          gh release download "$TAG" --repo "$REPO" \
+            --pattern latest.json --pattern android-update-beta.json \
+            --pattern "*.exe" --pattern "*clood*.apk" --dir beta-channel
+          INSTALLER="$(find beta-channel -maxdepth 1 -type f -name '*.exe' -print -quit)"
+          APK="$(find beta-channel -maxdepth 1 -type f -name '*.apk' -print -quit)"
+          test -n "$INSTALLER"
+          test -n "$APK"
+          mv "$INSTALLER" beta-channel/clood-beta-setup.exe
+          if [ "$APK" != "beta-channel/clood-beta.apk" ]; then
+            mv "$APK" beta-channel/clood-beta.apk
+          fi
+          if ! gh release view "$BETA_POINTER_TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release create "$BETA_POINTER_TAG" --repo "$REPO" --prerelease \
+              --target "$GITHUB_SHA" --title "Beta channel manifest" \
+              --notes "Permanent download and update pointer for the newest Clood beta."
+          fi
+          gh release upload "$BETA_POINTER_TAG" \
+            beta-channel/latest.json beta-channel/clood-beta-setup.exe \
+            beta-channel/clood-beta.apk beta-channel/android-update-beta.json \
+            --repo "$REPO" --clobber

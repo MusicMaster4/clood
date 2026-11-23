@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Clood" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/clood_bg</item>
+        <item name="android:colorBackground">@color/clood_bg</item>
+        <item name="android:statusBarColor">@color/clood_bg</item>
+        <item name="android:navigationBarColor">@color/clood_bg</item>
+        <item name="android:textColorPrimary">@color/clood_text</item>
+        <item name="android:textColorSecondary">@color/clood_muted</item>
+    </style>
+</resources>

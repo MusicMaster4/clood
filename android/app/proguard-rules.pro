@@ -1,0 +1,3 @@
+-keep class dev.slop.clood.** { *; }
+-dontwarn okhttp3.**
+-dontwarn okio.**

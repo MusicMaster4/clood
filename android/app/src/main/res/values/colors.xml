@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="clood_bg">#09090B</color>
+    <color name="clood_surface">#141418</color>
+    <color name="clood_text">#F4F4F5</color>
+    <color name="clood_muted">#71717A</color>
+    <color name="clood_ok">#34D399</color>
+    <color name="clood_danger">#EF4444</color>
+    <color name="clood_accent">#7C8CFF</color>
+</resources>

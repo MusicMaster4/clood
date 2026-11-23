@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build outputs
+dist/
+release-assets/
+beta-channel/
+latest.json
+android-update.json
+android-update-beta.json
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+*.keystore
+*.jks
+*.p12
+
+# Local env & secrets
+.env
+.env.*
+!.env.example
+*.key
+*.sig
+
+# OS & Editors
+.DS_Store
+Thumbs.db
+.vscode/
+*.log
