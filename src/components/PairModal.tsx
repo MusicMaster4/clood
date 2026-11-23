@@ -29,9 +29,9 @@ export function PairModal({ open, status, onClose, onStatusChange }: PairModalPr
       const p = await getPairingPayload();
       setPayload(p);
       const url = await QRCode.toDataURL(p.uri, {
-        width: 260,
-        margin: 2,
-        color: { dark: "#f4f4f5", light: "#00000000" },
+        width: 280,
+        margin: 3,
+        color: { dark: "#09090b", light: "#ffffff" },
         errorCorrectionLevel: "M",
       });
       setQrDataUrl(url);
@@ -68,9 +68,9 @@ export function PairModal({ open, status, onClose, onStatusChange }: PairModalPr
       const p = await rotatePairingToken();
       setPayload(p);
       const url = await QRCode.toDataURL(p.uri, {
-        width: 260,
-        margin: 2,
-        color: { dark: "#f4f4f5", light: "#00000000" },
+        width: 280,
+        margin: 3,
+        color: { dark: "#09090b", light: "#ffffff" },
         errorCorrectionLevel: "M",
       });
       setQrDataUrl(url);

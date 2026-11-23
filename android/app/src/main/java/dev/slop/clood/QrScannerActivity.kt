@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.widget.FrameLayout
@@ -16,6 +17,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -24,6 +27,7 @@ import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
 import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -45,7 +49,13 @@ class QrScannerActivity : AppCompatActivity() {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     private val processing = AtomicBoolean(false)
     private val reader = MultiFormatReader().apply {
-        setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE)))
+        setHints(
+            mapOf(
+                DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+                DecodeHintType.TRY_HARDER to true,
+                DecodeHintType.ALSO_INVERTED to true,
+            ),
+        )
     }
 
     private val cameraPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -78,27 +88,29 @@ class QrScannerActivity : AppCompatActivity() {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,
             )
+            scaleType = PreviewView.ScaleType.FILL_CENTER
         }
 
         val reticle = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(240), dp(240), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(250), dp(250), Gravity.CENTER)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(24).toFloat()
                 setColor(Color.TRANSPARENT)
-                setStroke(dp(2), Color.parseColor("#AAFFFFFF"))
+                setStroke(dp(2), Color.parseColor("#CCFFFFFF"))
             }
         }
 
         statusText = TextView(this).apply {
             text = "Scan PC QR over Tailscale"
             textSize = 13f
-            setTextColor(Color.parseColor("#E4E4E7"))
+            setTextColor(Color.parseColor("#F4F4F5"))
             gravity = Gravity.CENTER
             setPadding(dp(18), dp(10), dp(18), dp(10))
             background = GradientDrawable().apply {
                 cornerRadius = dp(999).toFloat()
-                setColor(Color.parseColor("#B309090B"))
+                setColor(Color.parseColor("#CC09090B"))
+                setStroke(dp(1), Color.parseColor("#2A2A34"))
             }
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -120,7 +132,18 @@ class QrScannerActivity : AppCompatActivity() {
             val preview = Preview.Builder().build().also {
                 it.surfaceProvider = previewView.surfaceProvider
             }
+
+            val resolutionSelector = ResolutionSelector.Builder()
+                .setResolutionStrategy(
+                    ResolutionStrategy(
+                        Size(1280, 720),
+                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                    ),
+                )
+                .build()
+
             val analysis = ImageAnalysis.Builder()
+                .setResolutionSelector(resolutionSelector)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .build()
                 .also {
@@ -130,6 +153,8 @@ class QrScannerActivity : AppCompatActivity() {
             runCatching {
                 provider.unbindAll()
                 provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+            }.onFailure {
+                runOnUiThread { statusText.text = "Camera failed to start" }
             }
         }, ContextCompat.getMainExecutor(this))
     }
@@ -138,36 +163,56 @@ class QrScannerActivity : AppCompatActivity() {
         try {
             if (processing.get()) return
             val plane = proxy.planes.firstOrNull() ?: return
+            val w = proxy.width
+            val h = proxy.height
+            val rowStride = plane.rowStride
             val buf = plane.buffer
-            val data = ByteArray(buf.remaining())
-            buf.get(data)
-            val source = PlanarYUVLuminanceSource(
-                data,
-                plane.rowStride,
-                proxy.height,
-                0,
-                0,
-                proxy.width,
-                proxy.height,
-                false,
-            )
-            val bitmap = BinaryBitmap(HybridBinarizer(source))
-            val text = runCatching { reader.decodeWithState(bitmap).text }.getOrNull() ?: return
+            buf.rewind()
+
+            // Extract tight contiguous Y luminance plane (avoids rowStride padding glitches across OEMs).
+            val yBytes = ByteArray(w * h)
+            if (rowStride == w) {
+                buf.get(yBytes, 0, yBytes.size.coerceAtMost(buf.remaining()))
+            } else {
+                val rowBuf = ByteArray(rowStride)
+                for (row in 0 until h) {
+                    val toRead = if (row == h - 1) w.coerceAtMost(buf.remaining()) else rowStride.coerceAtMost(buf.remaining())
+                    if (toRead <= 0) break
+                    buf.get(rowBuf, 0, toRead)
+                    System.arraycopy(rowBuf, 0, yBytes, row * w, w.coerceAtMost(toRead))
+                }
+            }
+
+            val source = PlanarYUVLuminanceSource(yBytes, w, h, 0, 0, w, h, false)
+            val text = decodeWithFallback(source) ?: return
+
             val config = TailscaleNet.parsePairingUri(text)
             if (config == null) {
-                runOnUiThread { statusText.text = "Invalid Tailscale Clood QR" }
+                runOnUiThread { statusText.text = "Not a valid Clood Tailscale QR" }
                 return
             }
             if (processing.compareAndSet(false, true)) {
                 verifyAndSave(config)
             }
         } finally {
+            reader.reset()
             proxy.close()
         }
     }
 
+    private fun decodeWithFallback(source: PlanarYUVLuminanceSource): String? {
+        runCatching {
+            return reader.decodeWithState(BinaryBitmap(HybridBinarizer(source))).text
+        }
+        reader.reset()
+        runCatching {
+            return reader.decodeWithState(BinaryBitmap(GlobalHistogramBinarizer(source))).text
+        }
+        return null
+    }
+
     private fun verifyAndSave(config: PairingConfig) {
-        runOnUiThread { statusText.text = "Verifying on Tailnet…" }
+        runOnUiThread { statusText.text = "Connecting to ${config.host}…" }
         thread {
             val okHttp = OkHttpClient.Builder()
                 .connectTimeout(6, TimeUnit.SECONDS)
@@ -203,8 +248,8 @@ class QrScannerActivity : AppCompatActivity() {
                     CloodConnectionService.start(this, CloodConnectionService.ACTION_RECONNECT)
                     setResult(RESULT_OK)
                     finish()
-                }.onFailure {
-                    statusText.text = "Not reachable on your Tailnet"
+                }.onFailure { err ->
+                    statusText.text = "Cannot reach ${config.host}:${config.port} (${err.message ?: "Tailscale"})"
                     processing.set(false)
                 }
             }

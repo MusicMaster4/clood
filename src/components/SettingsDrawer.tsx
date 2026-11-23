@@ -173,6 +173,29 @@ export function SettingsDrawer({ open, config, apiUrl, onClose, onSave }: Settin
             </label>
           </div>
 
+          <div className="toggle-group">
+            <label className="toggle-row">
+              <span>Start with Windows</span>
+              <input
+                type="checkbox"
+                checked={draft.launch_at_startup}
+                onChange={(e) => setDraft({ ...draft, launch_at_startup: e.target.checked })}
+              />
+              <span className="toggle-track" />
+            </label>
+
+            <label className="toggle-row" data-disabled={!draft.launch_at_startup ? "1" : "0"}>
+              <span>Start minimized to tray</span>
+              <input
+                type="checkbox"
+                disabled={!draft.launch_at_startup}
+                checked={draft.start_in_tray}
+                onChange={(e) => setDraft({ ...draft, start_in_tray: e.target.checked })}
+              />
+              <span className="toggle-track" />
+            </label>
+          </div>
+
           <div className="api-pill">
             <span className="mono">{apiUrl}</span>
             <button type="button" className="icon-btn-sm" onClick={handleCopyApi} aria-label="Copy API URL">

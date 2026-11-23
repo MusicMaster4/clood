@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.WindowManager
 import android.widget.FrameLayout
@@ -17,16 +18,23 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 
 /**
- * Full-screen minimalist lock-screen call UI: glowing Clood orb + native call actions.
+ * Full-screen minimalist dark call UI with lock-screen wake-up,
+ * glowing Clood orb, and full audio controls (Mute, Speaker, Bluetooth, Answer, Decline, End).
  */
 class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
     private lateinit var orbView: OrbGLView
     private lateinit var callerText: TextView
     private lateinit var cueText: TextView
+    private lateinit var routePill: TextView
     private lateinit var ringingRow: LinearLayout
-    private lateinit var activeRow: LinearLayout
+    private lateinit var activePanel: LinearLayout
+
     private lateinit var muteBtn: ImageButton
+    private lateinit var muteLabel: TextView
     private lateinit var speakerBtn: ImageButton
+    private lateinit var speakerLabel: TextView
+    private lateinit var bluetoothBtn: ImageButton
+    private lateinit var bluetoothLabel: TextView
 
     private val handler = Handler(Looper.getMainLooper())
     private val timerTick = object : Runnable {
@@ -92,14 +100,16 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         callerText.text = call.callerName
         when (call.phase) {
             CallPhase.RINGING -> {
-                cueText.text = "INCOMING"
+                cueText.text = "INCOMING CALL"
+                routePill.visibility = View.GONE
                 ringingRow.visibility = View.VISIBLE
-                activeRow.visibility = View.GONE
+                activePanel.visibility = View.GONE
                 orbView.setOrbState(OrbGLView.OrbMode.RINGING, call.orbColor, 0.35f, previewTint = true)
             }
             CallPhase.ACTIVE -> {
                 ringingRow.visibility = View.GONE
-                activeRow.visibility = View.VISIBLE
+                activePanel.visibility = View.VISIBLE
+                routePill.visibility = View.VISIBLE
                 updateTimer()
                 updateControlStates(call)
                 orbView.setOrbState(
@@ -122,9 +132,33 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
     }
 
     private fun updateControlStates(call: ActiveCallUi) {
+        val onBg = Color.parseColor("#F4F4F5")
+        val offBg = Color.parseColor("#1D1D24")
+        val btActiveBg = Color.parseColor("#6366F1")
+
         muteBtn.setImageResource(if (call.muted) R.drawable.ic_mic_off else R.drawable.ic_mic)
-        muteBtn.background = circleBg(if (call.muted) 0x33FFFFFF else 0x1AFFFFFF)
-        speakerBtn.background = circleBg(if (call.speakerOn) 0x33FFFFFF else 0x1AFFFFFF)
+        muteBtn.background = circleBg(if (call.muted) onBg else offBg)
+        muteBtn.setColorFilter(if (call.muted) Color.parseColor("#09090B") else Color.parseColor("#F4F4F5"))
+        muteLabel.text = if (call.muted) "Muted" else "Mute"
+
+        val speakerActive = call.audioRoute == AudioRoute.SPEAKER
+        speakerBtn.background = circleBg(if (speakerActive) onBg else offBg)
+        speakerBtn.setColorFilter(if (speakerActive) Color.parseColor("#09090B") else Color.parseColor("#F4F4F5"))
+        speakerLabel.text = if (speakerActive) "Speaker" else "Phone"
+
+        val btActive = call.audioRoute == AudioRoute.BLUETOOTH
+        bluetoothBtn.isEnabled = call.bluetoothAvailable || btActive
+        bluetoothBtn.alpha = if (call.bluetoothAvailable || btActive) 1f else 0.35f
+        bluetoothBtn.background = circleBg(if (btActive) btActiveBg else offBg)
+        bluetoothBtn.setColorFilter(Color.parseColor("#F4F4F5"))
+        bluetoothLabel.alpha = if (call.bluetoothAvailable || btActive) 1f else 0.35f
+        bluetoothLabel.text = if (btActive) "BT On" else "Bluetooth"
+
+        routePill.text = when (call.audioRoute) {
+            AudioRoute.BLUETOOTH -> "BLUETOOTH"
+            AudioRoute.SPEAKER -> "SPEAKER"
+            AudioRoute.EARPIECE -> "EARPIECE"
+        }
     }
 
     private fun buildUi(): View {
@@ -132,22 +166,39 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
             setBackgroundColor(Color.parseColor("#09090B"))
-            setPadding(dp(24), dp(64), dp(24), dp(52))
+            setPadding(dp(24), dp(60), dp(24), dp(42))
         }
 
         callerText = TextView(this).apply {
-            textSize = 24f
+            textSize = 28f
             setTextColor(Color.parseColor("#F4F4F5"))
-            letterSpacing = 0.03f
+            letterSpacing = 0.02f
             gravity = Gravity.CENTER
         }
 
         cueText = TextView(this).apply {
             textSize = 12f
-            setTextColor(Color.parseColor("#71717A"))
-            letterSpacing = 0.14f
+            setTextColor(Color.parseColor("#8A8A96"))
+            letterSpacing = 0.16f
             gravity = Gravity.CENTER
             setPadding(0, dp(8), 0, 0)
+        }
+
+        routePill = TextView(this).apply {
+            textSize = 10f
+            setTextColor(Color.parseColor("#A1A1AA"))
+            letterSpacing = 0.14f
+            visibility = View.GONE
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(999).toFloat()
+                setColor(Color.parseColor("#14141A"))
+                setStroke(dp(1), Color.parseColor("#24242E"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(10) }
         }
 
         val orbContainer = FrameLayout(this).apply {
@@ -158,20 +209,38 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             )
         }
         orbView = OrbGLView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(dp(300), dp(300), Gravity.CENTER)
+            layoutParams = FrameLayout.LayoutParams(dp(310), dp(310), Gravity.CENTER)
         }
         orbContainer.addView(orbView)
 
+        // Incoming Call Controls (Decline / Answer)
         ringingRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
+            setPadding(0, dp(8), 0, dp(12))
         }
-        val declineBtn = roundActionButton(R.drawable.ic_call_end, Color.parseColor("#EF4444"), 72) {
+
+        val declineCol = labeledRoundAction(
+            iconRes = R.drawable.ic_call_end,
+            bgColor = Color.parseColor("#EF4444"),
+            ringColor = Color.parseColor("#33EF4444"),
+            sizeDp = 74,
+            label = "Decline",
+        ) { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
             val id = CloodSessionBus.activeCall?.callId
             CloodConnectionService.start(this, CloodConnectionService.ACTION_DECLINE, id)
             finish()
         }
-        val answerBtn = roundActionButton(R.drawable.ic_call_accept, Color.parseColor("#22C55E"), 72) {
+
+        val answerCol = labeledRoundAction(
+            iconRes = R.drawable.ic_call_accept,
+            bgColor = Color.parseColor("#22C55E"),
+            ringColor = Color.parseColor("#3322C55E"),
+            sizeDp = 74,
+            label = "Answer",
+        ) { view ->
+            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
             val km = getSystemService(KeyguardManager::class.java)
             if (km?.isKeyguardLocked == true) {
                 runCatching { km.requestDismissKeyguard(this, null) }
@@ -179,44 +248,149 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             val id = CloodSessionBus.activeCall?.callId
             CloodConnectionService.start(this, CloodConnectionService.ACTION_ANSWER, id)
         }
-        ringingRow.addView(declineBtn, marginEnd(dp(64)))
-        ringingRow.addView(answerBtn)
 
-        activeRow = LinearLayout(this).apply {
+        ringingRow.addView(declineCol, marginEnd(dp(68)))
+        ringingRow.addView(answerCol)
+
+        // Active Call Controls (Frosted dock: Mute / Speaker / Bluetooth + End Call)
+        activePanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            )
+        }
+
+        val glassDock = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            visibility = View.GONE
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(28).toFloat()
+                setColor(Color.parseColor("#131318"))
+                setStroke(dp(1), Color.parseColor("#24242E"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { bottomMargin = dp(22) }
         }
-        muteBtn = roundActionButton(R.drawable.ic_mic, 0x1AFFFFFF, 60) {
+
+        val (muteCol, mBtn, mLbl) = dockControl(R.drawable.ic_mic, "Mute") {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             CloodConnectionService.start(this, CloodConnectionService.ACTION_TOGGLE_MUTE)
         }
-        val hangupBtn = roundActionButton(R.drawable.ic_call_end, Color.parseColor("#EF4444"), 70) {
-            CloodConnectionService.start(this, CloodConnectionService.ACTION_HANGUP)
-            finish()
-        }
-        speakerBtn = roundActionButton(R.drawable.ic_speaker, 0x33FFFFFF, 60) {
+        muteBtn = mBtn
+        muteLabel = mLbl
+
+        val (speakerCol, sBtn, sLbl) = dockControl(R.drawable.ic_speaker, "Speaker") {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             CloodConnectionService.start(this, CloodConnectionService.ACTION_TOGGLE_SPEAKER)
         }
-        activeRow.addView(muteBtn, marginEnd(dp(28)))
-        activeRow.addView(hangupBtn, marginEnd(dp(28)))
-        activeRow.addView(speakerBtn)
+        speakerBtn = sBtn
+        speakerLabel = sLbl
+
+        val (btCol, bBtn, bLbl) = dockControl(R.drawable.ic_bluetooth, "Bluetooth") {
+            it.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            CloodConnectionService.start(this, CloodConnectionService.ACTION_TOGGLE_BLUETOOTH)
+        }
+        bluetoothBtn = bBtn
+        bluetoothLabel = bLbl
+
+        glassDock.addView(muteCol, marginEnd(dp(24)))
+        glassDock.addView(speakerCol, marginEnd(dp(24)))
+        glassDock.addView(btCol)
+
+        val hangupBtn = ImageButton(this).apply {
+            contentDescription = "End call"
+            setImageDrawable(ContextCompat.getDrawable(this@CallActivity, R.drawable.ic_call_end))
+            background = circleBg(Color.parseColor("#EF4444"))
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            layoutParams = LinearLayout.LayoutParams(dp(72), dp(72))
+            setOnClickListener {
+                it.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                CloodConnectionService.start(this@CallActivity, CloodConnectionService.ACTION_HANGUP)
+                finish()
+            }
+        }
+
+        activePanel.addView(glassDock)
+        activePanel.addView(hangupBtn)
 
         root.addView(callerText)
         root.addView(cueText)
+        root.addView(routePill)
         root.addView(orbContainer)
         root.addView(ringingRow)
-        root.addView(activeRow)
+        root.addView(activePanel)
         return root
     }
 
-    private fun roundActionButton(iconRes: Int, bgColor: Int, sizeDp: Int, onClick: () -> Unit): ImageButton =
-        ImageButton(this).apply {
+    private fun labeledRoundAction(
+        iconRes: Int,
+        bgColor: Int,
+        ringColor: Int,
+        sizeDp: Int,
+        label: String,
+        onClick: (View) -> Unit,
+    ): LinearLayout {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        val ring = FrameLayout(this).apply {
+            background = circleBg(ringColor)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val btn = ImageButton(this).apply {
+            contentDescription = label
             setImageDrawable(ContextCompat.getDrawable(this@CallActivity, iconRes))
             background = circleBg(bgColor)
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
-            setOnClickListener { onClick() }
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+            layoutParams = FrameLayout.LayoutParams(dp(sizeDp), dp(sizeDp), Gravity.CENTER)
+            setOnClickListener { onClick(it) }
         }
+        ring.addView(btn)
+        val txt = TextView(this).apply {
+            text = label
+            textSize = 11.5f
+            setTextColor(Color.parseColor("#A1A1AA"))
+            setPadding(0, dp(10), 0, 0)
+        }
+        col.addView(ring)
+        col.addView(txt)
+        return col
+    }
+
+    private fun dockControl(
+        iconRes: Int,
+        label: String,
+        onClick: (View) -> Unit,
+    ): Triple<LinearLayout, ImageButton, TextView> {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        val btn = ImageButton(this).apply {
+            contentDescription = label
+            setImageDrawable(ContextCompat.getDrawable(this@CallActivity, iconRes))
+            background = circleBg(Color.parseColor("#1D1D24"))
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+            layoutParams = LinearLayout.LayoutParams(dp(58), dp(58))
+            setOnClickListener { onClick(it) }
+        }
+        val txt = TextView(this).apply {
+            text = label
+            textSize = 11f
+            setTextColor(Color.parseColor("#A1A1AA"))
+            setPadding(0, dp(7), 0, 0)
+        }
+        col.addView(btn)
+        col.addView(txt)
+        return Triple(col, btn, txt)
+    }
 
     private fun circleBg(color: Int) = GradientDrawable().apply {
         shape = GradientDrawable.OVAL

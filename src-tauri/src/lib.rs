@@ -4,6 +4,7 @@ mod codec;
 mod config;
 mod openai_live;
 mod phone_server;
+mod startup;
 mod tailscale;
 
 use std::sync::Arc;
@@ -133,6 +134,15 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let state_bg = Arc::clone(&state_for_setup);
+            let launched_minimized = std::env::args().any(|a| a == "--minimized");
+
+            // Show main window unless explicitly booted minimized into the system tray.
+            if !launched_minimized {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
 
             // System tray so Clood can stay resident for agent calls
             let show_i = MenuItem::with_id(app, "show", "Open Clood", true, None::<&str>)?;

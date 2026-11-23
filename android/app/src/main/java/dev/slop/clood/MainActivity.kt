@@ -159,6 +159,11 @@ class MainActivity : AppCompatActivity(), CloodSessionBus.Listener {
         ) {
             needed += Manifest.permission.POST_NOTIFICATIONS
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            needed += Manifest.permission.BLUETOOTH_CONNECT
+        }
         if (needed.isNotEmpty()) permLauncher.launch(needed.toTypedArray())
     }
 

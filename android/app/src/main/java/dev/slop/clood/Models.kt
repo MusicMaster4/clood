@@ -26,6 +26,12 @@ enum class CallPhase {
     ACTIVE,
 }
 
+enum class AudioRoute {
+    EARPIECE,
+    SPEAKER,
+    BLUETOOTH,
+}
+
 data class PairingConfig(
     val host: String,
     val port: Int,
@@ -43,7 +49,8 @@ data class ActiveCallUi(
     val startedAtMs: Long,
     val answeredAtMs: Long? = null,
     val muted: Boolean = false,
-    val speakerOn: Boolean = true,
+    val audioRoute: AudioRoute = AudioRoute.SPEAKER,
+    val bluetoothAvailable: Boolean = false,
 )
 
 object TailscaleNet {

@@ -23,7 +23,8 @@ import kotlin.concurrent.thread
 import kotlin.math.max
 
 /**
- * Full-duplex 24 kHz voice engine (with hardware echo cancellation) + native system ringtone.
+ * Full-duplex 24 kHz voice engine (with hardware echo cancellation),
+ * 3-way audio routing (Bluetooth / Speaker / Earpiece), and native system ringtone.
  */
 class CallAudioEngine(private val context: Context) {
     private val audioManager = context.getSystemService(AudioManager::class.java)
@@ -33,7 +34,7 @@ class CallAudioEngine(private val context: Context) {
 
     private val running = AtomicBoolean(false)
     @Volatile private var muted = false
-    @Volatile private var speakerOn = true
+    @Volatile private var currentRoute: AudioRoute = AudioRoute.SPEAKER
 
     private var audioTrack: AudioTrack? = null
     private var audioRecord: AudioRecord? = null
@@ -93,13 +94,43 @@ class CallAudioEngine(private val context: Context) {
         vibrator = null
     }
 
+    fun isBluetoothAvailable(): Boolean {
+        val am = audioManager ?: return false
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching {
+                am.availableCommunicationDevices.any { isBluetoothCommDevice(it) }
+            }.getOrDefault(false)
+        } else {
+            runCatching {
+                am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                        it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP
+                }
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun isBluetoothCommDevice(device: AudioDeviceInfo): Boolean {
+        if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) return true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            device.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+        ) {
+            return true
+        }
+        return false
+    }
+
     @SuppressLint("MissingPermission")
-    fun startCallAudio(codec: AudioCodecType, onEncodedMicFrame: (ByteArray) -> Unit) {
+    fun startCallAudio(
+        codec: AudioCodecType,
+        initialRoute: AudioRoute,
+        onEncodedMicFrame: (ByteArray) -> Unit,
+    ) {
         stopRingtone()
         stopCallAudio()
 
         audioManager?.mode = AudioManager.MODE_IN_COMMUNICATION
-        applySpeakerRouting(speakerOn)
+        setAudioRoute(initialRoute)
 
         val minPlayBuf = AudioTrack.getMinBufferSize(
             SAMPLE_RATE,
@@ -178,27 +209,50 @@ class CallAudioEngine(private val context: Context) {
         muted = value
     }
 
-    fun setSpeaker(enabled: Boolean) {
-        speakerOn = enabled
-        applySpeakerRouting(enabled)
-    }
+    fun setAudioRoute(route: AudioRoute): AudioRoute {
+        val am = audioManager ?: return route
+        val effectiveRoute = if (route == AudioRoute.BLUETOOTH && !isBluetoothAvailable()) {
+            AudioRoute.EARPIECE
+        } else {
+            route
+        }
+        currentRoute = effectiveRoute
 
-    private fun applySpeakerRouting(enabled: Boolean) {
-        val am = audioManager ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val targetType = if (enabled) {
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            } else {
-                AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-            }
-            val device = am.availableCommunicationDevices.firstOrNull { it.type == targetType }
-            if (device != null) {
-                am.setCommunicationDevice(device)
+            runCatching {
+                val devices = am.availableCommunicationDevices
+                val target = when (effectiveRoute) {
+                    AudioRoute.BLUETOOTH -> devices.firstOrNull { isBluetoothCommDevice(it) }
+                    AudioRoute.SPEAKER -> devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    AudioRoute.EARPIECE -> devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                }
+                if (target != null) {
+                    am.setCommunicationDevice(target)
+                }
             }
         } else {
             @Suppress("DEPRECATION")
-            am.isSpeakerphoneOn = enabled
+            runCatching {
+                when (effectiveRoute) {
+                    AudioRoute.BLUETOOTH -> {
+                        am.isSpeakerphoneOn = false
+                        am.startBluetoothSco()
+                        am.isBluetoothScoOn = true
+                    }
+                    AudioRoute.SPEAKER -> {
+                        am.stopBluetoothSco()
+                        am.isBluetoothScoOn = false
+                        am.isSpeakerphoneOn = true
+                    }
+                    AudioRoute.EARPIECE -> {
+                        am.stopBluetoothSco()
+                        am.isBluetoothScoOn = false
+                        am.isSpeakerphoneOn = false
+                    }
+                }
+            }
         }
+        return effectiveRoute
     }
 
     fun stopCallAudio() {
@@ -224,6 +278,13 @@ class CallAudioEngine(private val context: Context) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching { audioManager?.clearCommunicationDevice() }
+        } else {
+            @Suppress("DEPRECATION")
+            runCatching {
+                audioManager?.stopBluetoothSco()
+                audioManager?.isBluetoothScoOn = false
+                audioManager?.isSpeakerphoneOn = false
+            }
         }
         runCatching { audioManager?.mode = AudioManager.MODE_NORMAL }
     }

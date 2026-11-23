@@ -266,6 +266,7 @@ impl AppState {
             next.agent_name = "Clood".to_string();
         }
         save_config(&next)?;
+        let _ = crate::startup::set_launch_at_startup(next.launch_at_startup, next.start_in_tray);
         let port_changed = next.tailscale_port != prev.tailscale_port;
         *self.config.write().await = next.clone();
         self.send_config_sync_to_phone().await;
