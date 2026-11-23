@@ -91,6 +91,7 @@ class CloodConnectionService : Service() {
     private var reconnectDelayMs = 2000L
     private var destroyed = false
     private var ringWakeLock: PowerManager.WakeLock? = null
+    private var proximityWakeLock: PowerManager.WakeLock? = null
     private var activeCodec: AudioCodecType = AudioCodecType.ADPCM_24K
     private var micFgsActive = false
     private var pendingIncomingNotifRunnable: Runnable? = null
@@ -176,12 +177,12 @@ class CloodConnectionService : Service() {
                     AudioRoute.SPEAKER
                 }
                 val applied = audioEngine.setAudioRoute(desired)
-                CloodSessionBus.publishCall(
-                    current.copy(
-                        audioRoute = applied,
-                        bluetoothAvailable = audioEngine.isBluetoothAvailable(),
-                    ),
+                val updated = current.copy(
+                    audioRoute = applied,
+                    bluetoothAvailable = audioEngine.isBluetoothAvailable(),
                 )
+                CloodSessionBus.publishCall(updated)
+                syncProximityWakeLock(updated)
             }
             ACTION_TOGGLE_BLUETOOTH -> {
                 val current = CloodSessionBus.activeCall ?: return START_STICKY
@@ -194,12 +195,12 @@ class CloodConnectionService : Service() {
                     current.audioRoute
                 }
                 val applied = audioEngine.setAudioRoute(desired)
-                CloodSessionBus.publishCall(
-                    current.copy(
-                        audioRoute = applied,
-                        bluetoothAvailable = btAvail,
-                    ),
+                val updated = current.copy(
+                    audioRoute = applied,
+                    bluetoothAvailable = btAvail,
                 )
+                CloodSessionBus.publishCall(updated)
+                syncProximityWakeLock(updated)
             }
             else -> {
                 if (socket == null) connectNow()
@@ -216,6 +217,7 @@ class CloodConnectionService : Service() {
         socket?.close(1000, "Service stopped")
         socket = null
         releaseWakeLock()
+        releaseProximityWakeLock()
         super.onDestroy()
     }
 
@@ -405,6 +407,7 @@ class CloodConnectionService : Service() {
             bluetoothAvailable = btAvailable,
         )
         CloodSessionBus.publishCall(active)
+        syncProximityWakeLock(active)
 
         socket?.send(
             JSONObject()
@@ -455,6 +458,7 @@ class CloodConnectionService : Service() {
         audioEngine.stopCallAudio()
         cancelIncomingCallNotification()
         releaseWakeLock()
+        releaseProximityWakeLock()
         if (micFgsActive) {
             startMinimalForeground(includeMic = false)
         }
@@ -566,6 +570,43 @@ class CloodConnectionService : Service() {
             if (ringWakeLock?.isHeld == true) ringWakeLock?.release()
         }
         ringWakeLock = null
+    }
+
+    private fun syncProximityWakeLock(call: ActiveCallUi?) {
+        val shouldHold = call != null &&
+            call.phase == CallPhase.ACTIVE &&
+            call.audioRoute == AudioRoute.EARPIECE
+        if (shouldHold) {
+            acquireProximityWakeLock()
+        } else {
+            releaseProximityWakeLock()
+        }
+    }
+
+    private fun acquireProximityWakeLock() {
+        if (proximityWakeLock?.isHeld == true) return
+        val pm = getSystemService(PowerManager::class.java) ?: return
+        if (!pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) return
+        runCatching {
+            val lock = proximityWakeLock ?: pm.newWakeLock(
+                PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                "clood:proximity_screen_off",
+            ).also { proximityWakeLock = it }
+            if (!lock.isHeld) {
+                lock.acquire()
+            }
+        }
+    }
+
+    private fun releaseProximityWakeLock() {
+        runCatching {
+            proximityWakeLock?.let { lock ->
+                if (lock.isHeld) {
+                    lock.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY)
+                }
+            }
+        }
+        proximityWakeLock = null
     }
 
     companion object {

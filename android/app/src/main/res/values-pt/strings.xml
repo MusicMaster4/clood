@@ -14,7 +14,7 @@
     <string name="call_status_muted">MICROFONE MUDO</string>
     <string name="call_mute">Mudo</string>
     <string name="call_muted">Mudo</string>
-    <string name="call_speaker">Viva-voz</string>
+    <string name="call_speaker">Alto-falante</string>
     <string name="call_earpiece">Telefone</string>
     <string name="call_bluetooth">Bluetooth</string>
     <string name="call_bluetooth_on">BT Ativo</string>

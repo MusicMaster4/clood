@@ -1,15 +1,21 @@
 package dev.slop.clood
 
 import android.content.Context
-import android.graphics.PixelFormat
+import android.graphics.SurfaceTexture
+import android.opengl.EGL14
+import android.opengl.EGLConfig
+import android.opengl.EGLContext
+import android.opengl.EGLDisplay
+import android.opengl.EGLSurface
 import android.opengl.GLES20
-import android.opengl.GLSurfaceView
+import android.os.Handler
+import android.os.Looper
 import android.util.AttributeSet
+import android.view.Choreographer
+import android.view.TextureView
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.opengles.GL10
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -19,29 +25,247 @@ import kotlin.math.min
 import kotlin.random.Random
 
 /**
- * Native OpenGL ES 2.0 renderer executing the exact `yt-max` glass-silk glowing sphere shader
- * with critically-damped springs and real-time voice acceleration.
+ * Transparent TextureView-backed OpenGL ES 2.0 renderer executing the `yt-max` glass-silk
+ * glowing sphere shader with critically-damped springs and real-time voice acceleration.
+ * Uses premultiplied alpha over a fully transparent clear so the orb composites cleanly
+ * with any background without a dark square seam.
  */
 class OrbGLView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-) : GLSurfaceView(context, attrs) {
+) : TextureView(context, attrs), TextureView.SurfaceTextureListener {
 
     enum class OrbMode { IDLE, RINGING, SPEAKING }
 
     private val renderer = OrbRenderer()
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val lock = Object()
+
+    private var surfaceTextureRef: SurfaceTexture? = null
+    private var surfaceWidth = 0
+    private var surfaceHeight = 0
+    private var sizeChanged = false
+    private var paused = false
+    private var frameRequested = false
+    private var choreographerScheduled = false
+    private var renderThread: RenderThread? = null
+
+    private val frameCallback = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
+            synchronized(lock) {
+                choreographerScheduled = false
+                if (!paused && renderThread != null && surfaceTextureRef != null) {
+                    frameRequested = true
+                    lock.notifyAll()
+                    choreographerScheduled = true
+                    Choreographer.getInstance().postFrameCallback(this)
+                }
+            }
+        }
+    }
 
     init {
-        setEGLContextClientVersion(2)
-        setEGLConfigChooser(8, 8, 8, 8, 0, 0)
-        holder.setFormat(PixelFormat.TRANSLUCENT)
-        setZOrderOnTop(false)
-        setRenderer(renderer)
-        renderMode = RENDERMODE_CONTINUOUSLY
+        isOpaque = false
+        surfaceTextureListener = this
     }
 
     fun setOrbState(mode: OrbMode, colorHex: String, audioLevel: Float = 0f, previewTint: Boolean = true) {
         renderer.updateTarget(mode, colorHex, audioLevel, previewTint)
+    }
+
+    fun onResume() {
+        synchronized(lock) {
+            paused = false
+            frameRequested = true
+            lock.notifyAll()
+        }
+        scheduleNextFrame()
+    }
+
+    fun onPause() {
+        synchronized(lock) {
+            paused = true
+        }
+        cancelNextFrame()
+    }
+
+    override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
+        stopRenderThread()
+        val thread = RenderThread(surface)
+        synchronized(lock) {
+            surfaceTextureRef = surface
+            surfaceWidth = max(1, width)
+            surfaceHeight = max(1, height)
+            sizeChanged = true
+            frameRequested = true
+            renderThread = thread
+        }
+        thread.start()
+        if (!paused) {
+            scheduleNextFrame()
+        }
+    }
+
+    override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) {
+        synchronized(lock) {
+            surfaceWidth = max(1, width)
+            surfaceHeight = max(1, height)
+            sizeChanged = true
+            frameRequested = true
+            lock.notifyAll()
+        }
+    }
+
+    override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
+        cancelNextFrame()
+        stopRenderThread()
+        return true
+    }
+
+    override fun onSurfaceTextureUpdated(surface: SurfaceTexture) = Unit
+
+    private fun stopRenderThread() {
+        val threadToJoin: RenderThread?
+        synchronized(lock) {
+            surfaceTextureRef = null
+            threadToJoin = renderThread
+            renderThread = null
+            threadToJoin?.stopping = true
+            lock.notifyAll()
+        }
+        runCatching { threadToJoin?.join(500L) }
+    }
+
+    private fun scheduleNextFrame() {
+        val action = Runnable {
+            synchronized(lock) {
+                if (!paused && renderThread != null && surfaceTextureRef != null && !choreographerScheduled) {
+                    choreographerScheduled = true
+                    Choreographer.getInstance().postFrameCallback(frameCallback)
+                }
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run()
+        } else {
+            mainHandler.post(action)
+        }
+    }
+
+    private fun cancelNextFrame() {
+        val action = Runnable {
+            synchronized(lock) {
+                choreographerScheduled = false
+                Choreographer.getInstance().removeFrameCallback(frameCallback)
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run()
+        } else {
+            mainHandler.post(action)
+        }
+    }
+
+    private inner class RenderThread(private val surfaceTexture: SurfaceTexture) : Thread("clood-orb-gl") {
+        @Volatile var stopping = false
+
+        override fun run() {
+            var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
+            var context: EGLContext = EGL14.EGL_NO_CONTEXT
+            var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+
+            try {
+                display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+                if (display == EGL14.EGL_NO_DISPLAY) return
+
+                val version = IntArray(2)
+                if (!EGL14.eglInitialize(display, version, 0, version, 1)) return
+
+                val configAttribs = intArrayOf(
+                    EGL14.EGL_RED_SIZE, 8,
+                    EGL14.EGL_GREEN_SIZE, 8,
+                    EGL14.EGL_BLUE_SIZE, 8,
+                    EGL14.EGL_ALPHA_SIZE, 8,
+                    EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                    EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+                    EGL14.EGL_NONE,
+                )
+                val configs = arrayOfNulls<EGLConfig>(1)
+                val numConfigs = IntArray(1)
+                if (!EGL14.eglChooseConfig(display, configAttribs, 0, configs, 0, 1, numConfigs, 0) ||
+                    numConfigs[0] <= 0 ||
+                    configs[0] == null
+                ) {
+                    return
+                }
+                val config = configs[0]!!
+
+                val contextAttribs = intArrayOf(
+                    EGL14.EGL_CONTEXT_CLIENT_VERSION, 2,
+                    EGL14.EGL_NONE,
+                )
+                context = EGL14.eglCreateContext(display, config, EGL14.EGL_NO_CONTEXT, contextAttribs, 0)
+                if (context == EGL14.EGL_NO_CONTEXT) return
+
+                eglSurface = EGL14.eglCreateWindowSurface(
+                    display,
+                    config,
+                    surfaceTexture,
+                    intArrayOf(EGL14.EGL_NONE),
+                    0,
+                )
+                if (eglSurface == EGL14.EGL_NO_SURFACE) return
+
+                if (!EGL14.eglMakeCurrent(display, eglSurface, eglSurface, context)) return
+
+                renderer.onSurfaceCreated()
+
+                while (!stopping) {
+                    var w = 1
+                    var h = 1
+                    var resized = false
+                    synchronized(lock) {
+                        while (!stopping && (paused || !frameRequested)) {
+                            try {
+                                lock.wait()
+                            } catch (_: InterruptedException) {
+                                // Re-check loop condition
+                            }
+                        }
+                        if (!stopping) {
+                            frameRequested = false
+                            w = surfaceWidth
+                            h = surfaceHeight
+                            resized = sizeChanged
+                            sizeChanged = false
+                        }
+                    }
+                    if (stopping) break
+                    if (resized) {
+                        renderer.onSurfaceChanged(w, h)
+                    }
+                    renderer.onDrawFrame()
+                    EGL14.eglSwapBuffers(display, eglSurface)
+                }
+            } finally {
+                renderer.onSurfaceDestroyed()
+                if (display != EGL14.EGL_NO_DISPLAY) {
+                    EGL14.eglMakeCurrent(
+                        display,
+                        EGL14.EGL_NO_SURFACE,
+                        EGL14.EGL_NO_SURFACE,
+                        EGL14.EGL_NO_CONTEXT,
+                    )
+                    if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                        EGL14.eglDestroySurface(display, eglSurface)
+                    }
+                    if (context != EGL14.EGL_NO_CONTEXT) {
+                        EGL14.eglDestroyContext(display, context)
+                    }
+                    EGL14.eglTerminate(display)
+                }
+            }
+        }
     }
 
     private class Spring(var x: Float = 0f, var v: Float = 0f) {
@@ -68,7 +292,7 @@ class OrbGLView @JvmOverloads constructor(
         val pulse: Float,
     )
 
-    private class OrbRenderer : Renderer {
+    private class OrbRenderer {
         @Volatile private var targetMode = OrbMode.IDLE
         @Volatile private var targetColor = "#7c8cff"
         @Volatile private var targetLevel = 0f
@@ -123,10 +347,10 @@ class OrbGLView @JvmOverloads constructor(
             targetPreviewTint = previewTint
         }
 
-        override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-            GLES20.glClearColor(9f / 255f, 9f / 255f, 11f / 255f, 1f)
-            GLES20.glEnable(GLES20.GL_BLEND)
-            GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        fun onSurfaceCreated() {
+            lastNanos = 0L
+            GLES20.glClearColor(0f, 0f, 0f, 0f)
+            GLES20.glDisable(GLES20.GL_BLEND)
 
             val vs = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
             val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, FRAGMENT_SHADER)
@@ -152,13 +376,19 @@ class OrbGLView @JvmOverloads constructor(
             uGlow = GLES20.glGetUniformLocation(program, "uGlow")
         }
 
-        override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
+        fun onSurfaceDestroyed() {
+            program = 0
+            lastNanos = 0L
+        }
+
+        fun onSurfaceChanged(w: Int, h: Int) {
             width = max(1, w)
             height = max(1, h)
             GLES20.glViewport(0, 0, width, height)
         }
 
-        override fun onDrawFrame(gl: GL10?) {
+        fun onDrawFrame() {
+            if (program == 0) return
             val now = System.nanoTime()
             val dt = if (lastNanos == 0L) 1f / 60f else min(0.1f, (now - lastNanos) / 1e9f)
             lastNanos = now

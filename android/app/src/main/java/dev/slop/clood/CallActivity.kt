@@ -49,7 +49,6 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
     private lateinit var timerText: TextView
     private lateinit var routeChip: TextView
     private lateinit var orbView: OrbGLView
-    private lateinit var liveCueText: TextView
 
     private lateinit var ringingContainer: LinearLayout
     private lateinit var callSlider: CallSliderView
@@ -127,7 +126,9 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         // Immediately dismiss any incoming heads-up notification so only this full-screen UI is shown.
         CloodConnectionService.dismissIncomingNotification(this)
         orbView.onResume()
-        startDotPulse()
+        if (CloodSessionBus.activeCall?.phase == CallPhase.RINGING) {
+            startDotPulse()
+        }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -168,7 +169,6 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             audioLevel = level,
             previewTint = false,
         )
-        updateLiveCue(call, speaking)
     }
 
     private fun renderCall(call: ActiveCallUi?) {
@@ -188,14 +188,15 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
                     AudioManager.STREAM_RING
                 }
 
+                statusPill.visibility = View.VISIBLE
                 statusBadgeText.text = getString(R.string.call_incoming_badge)
                 setStatusDotColor(Color.parseColor("#34D399"))
+                startDotPulse()
                 timerText.visibility = View.GONE
                 routeChip.visibility = if (stream == RingtoneStream.ALARM) View.VISIBLE else View.GONE
                 if (stream == RingtoneStream.ALARM) {
                     routeChip.text = getString(R.string.call_alarm_badge)
                 }
-                liveCueText.visibility = View.INVISIBLE
 
                 if (lastPhase != CallPhase.RINGING) {
                     callSlider.reset()
@@ -207,6 +208,9 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             CallPhase.ACTIVE -> {
                 volumeControlStream = AudioManager.STREAM_VOICE_CALL
                 CloodConnectionService.dismissIncomingNotification(this)
+
+                statusPill.visibility = View.GONE
+                stopDotPulse()
 
                 if (lastPhase == CallPhase.RINGING) {
                     activePanel.alpha = 0f
@@ -222,12 +226,10 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
                 }
                 ringingContainer.visibility = View.GONE
                 timerText.visibility = View.VISIBLE
-                routeChip.visibility = View.VISIBLE
-                liveCueText.visibility = View.VISIBLE
+                routeChip.visibility = View.GONE
 
                 updateTimer()
                 updateControlStates(call)
-                updateLiveCue(call, CloodSessionBus.agentSpeaking)
                 orbView.setOrbState(
                     mode = if (CloodSessionBus.agentSpeaking) OrbGLView.OrbMode.SPEAKING else OrbGLView.OrbMode.IDLE,
                     colorHex = call.orbColor,
@@ -246,29 +248,6 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         val started = call.answeredAtMs ?: call.startedAtMs
         val sec = ((System.currentTimeMillis() - started) / 1000L).coerceAtLeast(0L)
         timerText.text = "%02d:%02d".format(sec / 60, sec % 60)
-    }
-
-    private fun updateLiveCue(call: ActiveCallUi, speaking: Boolean) {
-        when {
-            call.muted -> {
-                statusBadgeText.text = getString(R.string.call_muted_badge)
-                setStatusDotColor(Color.parseColor("#F59E0B"))
-                liveCueText.text = getString(R.string.call_status_muted)
-                liveCueText.setTextColor(Color.parseColor("#F59E0B"))
-            }
-            speaking -> {
-                statusBadgeText.text = getString(R.string.call_live_badge)
-                setStatusDotColor(Color.parseColor("#34D399"))
-                liveCueText.text = getString(R.string.call_status_speaking)
-                liveCueText.setTextColor(Color.parseColor("#E4E4E7"))
-            }
-            else -> {
-                statusBadgeText.text = getString(R.string.call_live_badge)
-                setStatusDotColor(Color.parseColor("#34D399"))
-                liveCueText.text = getString(R.string.call_status_listening)
-                liveCueText.setTextColor(Color.parseColor("#71717A"))
-            }
-        }
     }
 
     private fun setStatusDotColor(color: Int) {
@@ -305,10 +284,10 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         muteLabel.setTextColor(if (call.muted) Color.parseColor("#F4F4F5") else Color.parseColor("#8A8A96"))
 
         val speakerActive = call.audioRoute == AudioRoute.SPEAKER
-        speakerBtn.setImageResource(if (speakerActive) R.drawable.ic_speaker else R.drawable.ic_earpiece)
+        speakerBtn.setImageResource(R.drawable.ic_speaker)
         speakerBtn.background = circleControlBg(if (speakerActive) activeBg else idleBg, if (speakerActive) null else idleStroke)
         speakerBtn.setColorFilter(if (speakerActive) darkIcon else lightIcon)
-        speakerLabel.text = getString(if (speakerActive) R.string.call_speaker else R.string.call_earpiece)
+        speakerLabel.text = getString(R.string.call_speaker)
         speakerLabel.setTextColor(if (speakerActive) Color.parseColor("#F4F4F5") else Color.parseColor("#8A8A96"))
 
         val btActive = call.audioRoute == AudioRoute.BLUETOOTH
@@ -320,12 +299,6 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         bluetoothLabel.alpha = if (btEnabled) 1f else 0.32f
         bluetoothLabel.text = getString(if (btActive) R.string.call_bluetooth_on else R.string.call_bluetooth)
         bluetoothLabel.setTextColor(if (btActive) Color.parseColor("#C7D2FE") else Color.parseColor("#8A8A96"))
-
-        routeChip.text = when (call.audioRoute) {
-            AudioRoute.BLUETOOTH -> getString(R.string.call_route_bluetooth)
-            AudioRoute.SPEAKER -> getString(R.string.call_route_speaker)
-            AudioRoute.EARPIECE -> getString(R.string.call_route_earpiece)
-        }
     }
 
     private fun buildUi(): View {
@@ -415,11 +388,12 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             setTextColor(Color.parseColor("#A1A1AA"))
             letterSpacing = 0.08f
             fontFeatureSettings = "tnum"
+            gravity = Gravity.CENTER
             visibility = View.GONE
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { marginEnd = dp(10) }
+            )
         }
 
         routeChip = TextView(this).apply {
@@ -452,20 +426,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         orbView = OrbGLView(this).apply {
             layoutParams = LinearLayout.LayoutParams(orbSizePx, orbSizePx)
         }
-        liveCueText = TextView(this).apply {
-            textSize = 11.5f
-            setTextColor(Color.parseColor("#71717A"))
-            letterSpacing = 0.18f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            gravity = Gravity.CENTER
-            visibility = View.INVISIBLE
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) }
-        }
         orbStage.addView(orbView)
-        orbStage.addView(liveCueText)
 
         // Incoming Call Controls: Bi-directional Swipe Slider
         ringingContainer = LinearLayout(this).apply {
@@ -535,7 +496,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         ringingContainer.addView(callSlider)
         ringingContainer.addView(sliderLabelsRow)
 
-        // Active Call Controls: Frosted Glass Console + Wide Crimson End Pill
+        // Active Call Controls: Floating Minimalist Buttons + Wide Crimson End Pill
         activePanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
@@ -546,19 +507,13 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             )
         }
 
-        val glassDock = LinearLayout(this).apply {
+        val controlsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(dp(22), dp(16), dp(22), dp(16))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(32).toFloat()
-                setColor(Color.parseColor("#121218"))
-                setStroke(dp(1), Color.parseColor("#252532"))
-            }
             layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { bottomMargin = dp(20) }
+            ).apply { bottomMargin = dp(32) }
         }
 
         val (muteCol, mBtn, mLbl) = dockControl(R.drawable.ic_mic, getString(R.string.call_mute)) {
@@ -582,9 +537,12 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         bluetoothBtn = bBtn
         bluetoothLabel = bLbl
 
-        glassDock.addView(muteCol, marginEnd(dp(26)))
-        glassDock.addView(speakerCol, marginEnd(dp(26)))
-        glassDock.addView(btCol)
+        val equalColParams = {
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        controlsRow.addView(muteCol, equalColParams())
+        controlsRow.addView(speakerCol, equalColParams())
+        controlsRow.addView(btCol, equalColParams())
 
         val endPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -622,7 +580,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         endPill.addView(endIcon)
         endPill.addView(endText)
 
-        activePanel.addView(glassDock)
+        activePanel.addView(controlsRow)
         activePanel.addView(endPill)
 
         root.addView(statusPill)
@@ -649,17 +607,19 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
             contentDescription = label
             setImageDrawable(ContextCompat.getDrawable(this@CallActivity, iconRes))
             background = circleControlBg(Color.parseColor("#1A1A22"), Color.parseColor("#2A2A36"))
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            layoutParams = LinearLayout.LayoutParams(dp(58), dp(58))
+            setPadding(dp(18), dp(18), dp(18), dp(18))
+            layoutParams = LinearLayout.LayoutParams(dp(62), dp(62))
             setOnClickListener { onClick(it) }
             attachPressScale(this)
         }
         val txt = TextView(this).apply {
             text = label
-            textSize = 11f
+            textSize = 11.5f
             setTextColor(Color.parseColor("#8A8A96"))
-            letterSpacing = 0.03f
-            setPadding(0, dp(8), 0, 0)
+            letterSpacing = 0.02f
+            gravity = Gravity.CENTER
+            maxLines = 1
+            setPadding(0, dp(9), 0, 0)
         }
         col.addView(btn)
         col.addView(txt)
@@ -681,11 +641,6 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         setColor(fillColor)
         if (strokeColor != null) setStroke(dp(1), strokeColor)
     }
-
-    private fun marginEnd(px: Int) = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-        LinearLayout.LayoutParams.WRAP_CONTENT,
-    ).apply { marginEnd = px }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
