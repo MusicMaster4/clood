@@ -36,7 +36,6 @@ class CallAudioEngine(private val context: Context) {
 
     private val running = AtomicBoolean(false)
     @Volatile private var muted = false
-    @Volatile private var currentRoute: AudioRoute = AudioRoute.SPEAKER
 
     private var audioTrack: AudioTrack? = null
     private var audioRecord: AudioRecord? = null
@@ -242,7 +241,6 @@ class CallAudioEngine(private val context: Context) {
         } else {
             route
         }
-        currentRoute = effectiveRoute
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             runCatching {

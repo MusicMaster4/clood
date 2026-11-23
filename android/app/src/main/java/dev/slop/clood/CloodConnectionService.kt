@@ -405,11 +405,9 @@ class CloodConnectionService : Service() {
         releaseWakeLock()
 
         val btAvailable = audioEngine.isBluetoothAvailable()
-        val initialRoute = if (btAvailable) AudioRoute.BLUETOOTH else AudioRoute.SPEAKER
         val active = current.copy(
             phase = CallPhase.ACTIVE,
             answeredAtMs = System.currentTimeMillis(),
-            audioRoute = initialRoute,
             bluetoothAvailable = btAvailable,
         )
         CloodSessionBus.publishCall(active)
@@ -428,7 +426,7 @@ class CloodConnectionService : Service() {
             startMinimalForeground(includeMic = true)
         }
 
-        audioEngine.startCallAudio(activeCodec, initialRoute) { encodedFrame ->
+        audioEngine.startCallAudio(activeCodec, active.audioRoute) { encodedFrame ->
             socket?.send(encodedFrame.toByteString(0, encodedFrame.size))
         }
 

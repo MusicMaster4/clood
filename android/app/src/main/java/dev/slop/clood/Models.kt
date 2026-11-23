@@ -59,7 +59,7 @@ data class ActiveCallUi(
     val startedAtMs: Long,
     val answeredAtMs: Long? = null,
     val muted: Boolean = false,
-    val audioRoute: AudioRoute = AudioRoute.SPEAKER,
+    val audioRoute: AudioRoute = AudioRoute.EARPIECE,
     val bluetoothAvailable: Boolean = false,
 )
 
