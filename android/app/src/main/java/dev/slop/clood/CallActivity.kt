@@ -33,6 +33,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import kotlin.math.hypot
 import kotlin.math.min
 
 /**
@@ -61,11 +62,41 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
     private lateinit var speakerLabel: TextView
     private lateinit var bluetoothBtn: ImageButton
     private lateinit var bluetoothLabel: TextView
+    private lateinit var rootFrame: FrameLayout
+    private lateinit var endPill: LinearLayout
+    private lateinit var endCallOverlay: EndCallRadialOverlay
+
+    private var endPointerId = MotionEvent.INVALID_POINTER_ID
+    private var endDownRawX = 0f
+    private var endDownRawY = 0f
+    private var endLastRawX = 0f
+    private var endLastRawY = 0f
+    private var endHoldOpened = false
+    private var endGestureCancelled = false
 
     private var pulseAnimator: ObjectAnimator? = null
     private var lastPhase: CallPhase? = null
 
     private val handler = Handler(Looper.getMainLooper())
+    private val openEndHoldMenuRunnable = Runnable {
+        if (endGestureCancelled || endPointerId == MotionEvent.INVALID_POINTER_ID) return@Runnable
+        if (CloodSessionBus.activeCall?.phase != CallPhase.ACTIVE) return@Runnable
+        endHoldOpened = true
+        endPill.parent?.requestDisallowInterceptTouchEvent(true)
+        endPill.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        val pillLoc = IntArray(2)
+        val frameLoc = IntArray(2)
+        endPill.getLocationOnScreen(pillLoc)
+        rootFrame.getLocationOnScreen(frameLoc)
+        val anchorX = pillLoc[0] + endPill.width * endPill.scaleX * 0.5f - frameLoc[0]
+        val anchorY = pillLoc[1] + endPill.height * endPill.scaleY * 0.5f - frameLoc[1]
+        endCallOverlay.open(
+            anchorX = anchorX,
+            anchorY = anchorY,
+            fingerX = endLastRawX - frameLoc[0],
+            fingerY = endLastRawY - frameLoc[1],
+        )
+    }
     private val timerTick = object : Runnable {
         override fun run() {
             updateTimer()
@@ -140,6 +171,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
 
     override fun onPause() {
         isForeground = false
+        resetEndHoldGesture(immediate = true)
         stopDotPulse()
         orbView.onPause()
         super.onPause()
@@ -173,8 +205,12 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
 
     private fun renderCall(call: ActiveCallUi?) {
         if (call == null) {
+            resetEndHoldGesture(immediate = true)
             finish()
             return
+        }
+        if (call.phase != CallPhase.ACTIVE) {
+            resetEndHoldGesture(immediate = true)
         }
         callerText.text = call.callerName
         ambientGlowView.setTintHex(call.orbColor)
@@ -305,6 +341,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         val frame = FrameLayout(this).apply {
             setBackgroundColor(Color.parseColor("#09090B"))
         }
+        rootFrame = frame
 
         ambientGlowView = AmbientGlowView(this).apply {
             layoutParams = FrameLayout.LayoutParams(
@@ -544,7 +581,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         controlsRow.addView(speakerCol, equalColParams())
         controlsRow.addView(btCol, equalColParams())
 
-        val endPill = LinearLayout(this).apply {
+        endPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             contentDescription = getString(R.string.call_end)
@@ -563,7 +600,7 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
                 CloodConnectionService.start(this@CallActivity, CloodConnectionService.ACTION_HANGUP)
                 finish()
             }
-            attachPressScale(this)
+            attachEndPillHoldGesture(this)
         }
         val endIcon = ImageView(this).apply {
             setImageDrawable(ContextCompat.getDrawable(this@CallActivity, R.drawable.ic_call_end))
@@ -580,8 +617,21 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         endPill.addView(endIcon)
         endPill.addView(endText)
 
+        val endHoldHint = TextView(this).apply {
+            text = getString(R.string.call_end_hold_hint)
+            textSize = 10.5f
+            setTextColor(Color.parseColor("#52525B"))
+            letterSpacing = 0.03f
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(12) }
+        }
+
         activePanel.addView(controlsRow)
         activePanel.addView(endPill)
+        activePanel.addView(endHoldHint)
 
         root.addView(statusPill)
         root.addView(callerText)
@@ -591,6 +641,14 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         root.addView(activePanel)
 
         frame.addView(root)
+
+        endCallOverlay = EndCallRadialOverlay(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+        }
+        frame.addView(endCallOverlay)
         return frame
     }
 
@@ -624,6 +682,98 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
         col.addView(btn)
         col.addView(txt)
         return Triple(col, btn, txt)
+    }
+
+    private fun attachEndPillHoldGesture(view: View) {
+        view.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    endPointerId = event.getPointerId(0)
+                    endDownRawX = event.rawX
+                    endDownRawY = event.rawY
+                    endLastRawX = event.rawX
+                    endLastRawY = event.rawY
+                    endHoldOpened = false
+                    endGestureCancelled = false
+                    v.animate().scaleX(0.94f).scaleY(0.94f).setDuration(90L).start()
+                    handler.removeCallbacks(openEndHoldMenuRunnable)
+                    handler.postDelayed(openEndHoldMenuRunnable, END_HOLD_DELAY_MS)
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val idx = event.findPointerIndex(endPointerId)
+                    if (idx < 0) return@setOnTouchListener true
+                    val rawX = if (idx == 0) event.rawX else event.getX(idx) + (event.rawX - event.x)
+                    val rawY = if (idx == 0) event.rawY else event.getY(idx) + (event.rawY - event.y)
+                    endLastRawX = rawX
+                    endLastRawY = rawY
+
+                    if (endHoldOpened) {
+                        val frameLoc = IntArray(2)
+                        rootFrame.getLocationOnScreen(frameLoc)
+                        endCallOverlay.updateFinger(rawX - frameLoc[0], rawY - frameLoc[1])
+                    } else if (!endGestureCancelled) {
+                        if (hypot(rawX - endDownRawX, rawY - endDownRawY) > dp(24)) {
+                            endGestureCancelled = true
+                            handler.removeCallbacks(openEndHoldMenuRunnable)
+                            v.animate().scaleX(1f).scaleY(1f).setDuration(140L).start()
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    handler.removeCallbacks(openEndHoldMenuRunnable)
+                    v.parent?.requestDisallowInterceptTouchEvent(false)
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(140L).start()
+                    endPointerId = MotionEvent.INVALID_POINTER_ID
+
+                    if (endHoldOpened) {
+                        endHoldOpened = false
+                        when (endCallOverlay.finishAndGetSelection()) {
+                            EndCallOption.REDIAL_10M -> {
+                                v.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                CloodConnectionService.start(
+                                    this@CallActivity,
+                                    CloodConnectionService.ACTION_HANGUP_REDIAL,
+                                )
+                                finish()
+                            }
+                            EndCallOption.CANCEL -> {
+                                v.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                CloodConnectionService.start(
+                                    this@CallActivity,
+                                    CloodConnectionService.ACTION_HANGUP_CANCEL,
+                                )
+                                finish()
+                            }
+                            EndCallOption.NONE -> Unit
+                        }
+                    } else if (!endGestureCancelled) {
+                        v.performClick()
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    resetEndHoldGesture(immediate = false)
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun resetEndHoldGesture(immediate: Boolean) {
+        handler.removeCallbacks(openEndHoldMenuRunnable)
+        endPointerId = MotionEvent.INVALID_POINTER_ID
+        endHoldOpened = false
+        endGestureCancelled = false
+        if (::endPill.isInitialized) {
+            endPill.parent?.requestDisallowInterceptTouchEvent(false)
+            endPill.animate().scaleX(1f).scaleY(1f).setDuration(120L).start()
+        }
+        if (::endCallOverlay.isInitialized) {
+            if (immediate) endCallOverlay.dismissImmediate() else endCallOverlay.dismiss()
+        }
     }
 
     private fun attachPressScale(view: View) {
@@ -690,6 +840,8 @@ class CallActivity : AppCompatActivity(), CloodSessionBus.Listener {
     }
 
     companion object {
+        private const val END_HOLD_DELAY_MS = 320L
+
         @Volatile
         var isForeground: Boolean = false
     }

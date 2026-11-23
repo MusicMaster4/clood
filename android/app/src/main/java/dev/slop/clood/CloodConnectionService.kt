@@ -157,6 +157,12 @@ class CloodConnectionService : Service() {
             ACTION_HANGUP -> {
                 teardownCall(notifyPc = true)
             }
+            ACTION_HANGUP_REDIAL -> {
+                teardownCall(notifyPc = true, hangupReason = HANGUP_REASON_REDIAL_10M)
+            }
+            ACTION_HANGUP_CANCEL -> {
+                teardownCall(notifyPc = true, hangupReason = HANGUP_REASON_CANCEL)
+            }
             ACTION_REPOST_RINGING_NOTIF -> {
                 val current = CloodSessionBus.activeCall
                 if (current != null && current.phase == CallPhase.RINGING && !CallActivity.isForeground) {
@@ -441,15 +447,15 @@ class CloodConnectionService : Service() {
         teardownCall(notifyPc = false)
     }
 
-    private fun teardownCall(notifyPc: Boolean) {
+    private fun teardownCall(notifyPc: Boolean, hangupReason: String? = null) {
         val current = CloodSessionBus.activeCall
         if (notifyPc && current != null) {
-            val type = if (current.phase == CallPhase.RINGING) "call_decline" else "hangup"
             socket?.send(
-                JSONObject()
-                    .put("type", type)
-                    .put("call_id", current.callId)
-                    .toString(),
+                buildHangupPayload(
+                    callId = current.callId,
+                    isRinging = current.phase == CallPhase.RINGING,
+                    reason = hangupReason,
+                ),
             )
         }
         clearPendingIncomingNotif()
@@ -615,6 +621,10 @@ class CloodConnectionService : Service() {
         const val ACTION_ANSWER = "dev.slop.clood.ANSWER"
         const val ACTION_DECLINE = "dev.slop.clood.DECLINE"
         const val ACTION_HANGUP = "dev.slop.clood.HANGUP"
+        const val ACTION_HANGUP_REDIAL = "dev.slop.clood.HANGUP_REDIAL"
+        const val ACTION_HANGUP_CANCEL = "dev.slop.clood.HANGUP_CANCEL"
+        const val HANGUP_REASON_REDIAL_10M = "redial_10m"
+        const val HANGUP_REASON_CANCEL = "cancel"
         const val ACTION_REPOST_RINGING_NOTIF = "dev.slop.clood.REPOST_RINGING_NOTIF"
         const val ACTION_TOGGLE_MUTE = "dev.slop.clood.TOGGLE_MUTE"
         const val ACTION_TOGGLE_SPEAKER = "dev.slop.clood.TOGGLE_SPEAKER"
@@ -626,6 +636,21 @@ class CloodConnectionService : Service() {
 
         fun dismissIncomingNotification(context: Context) {
             context.getSystemService(NotificationManager::class.java)?.cancel(NOTIF_ID_INCOMING_CALL)
+        }
+
+        internal fun buildHangupPayload(
+            callId: String,
+            isRinging: Boolean,
+            reason: String? = null,
+        ): String {
+            val type = if (isRinging) "call_decline" else "hangup"
+            val json = JSONObject()
+                .put("type", type)
+                .put("call_id", callId)
+            if (!isRinging && !reason.isNullOrBlank()) {
+                json.put("reason", reason)
+            }
+            return json.toString()
         }
 
         fun start(context: Context, action: String? = null, callId: String? = null) {

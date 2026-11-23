@@ -19,6 +19,15 @@
     <string name="call_bluetooth">Bluetooth</string>
     <string name="call_bluetooth_on">BT On</string>
     <string name="call_end">End</string>
+    <string name="call_end_hold_hint">Hold for more options</string>
+    <string name="call_hold_prompt">Slide to an option</string>
+    <string name="call_hold_release_cancel">Release here to stay on call</string>
+    <string name="call_opt_redial_short">In 10 min</string>
+    <string name="call_opt_redial_title">Call back in 10 min</string>
+    <string name="call_opt_redial_desc">Discards this call and asks to redial</string>
+    <string name="call_opt_cancel_short">Cancel</string>
+    <string name="call_opt_cancel_title">Cancel call</string>
+    <string name="call_opt_cancel_desc">Discards this call and pauses work</string>
     <string name="call_route_bluetooth">BLUETOOTH</string>
     <string name="call_route_speaker">SPEAKER</string>
     <string name="call_route_earpiece">EARPIECE</string>

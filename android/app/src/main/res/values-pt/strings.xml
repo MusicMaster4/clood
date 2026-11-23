@@ -19,6 +19,15 @@
     <string name="call_bluetooth">Bluetooth</string>
     <string name="call_bluetooth_on">BT Ativo</string>
     <string name="call_end">Encerrar</string>
+    <string name="call_end_hold_hint">Segure para mais opções</string>
+    <string name="call_hold_prompt">Arraste até um balão</string>
+    <string name="call_hold_release_cancel">Solte aqui para continuar</string>
+    <string name="call_opt_redial_short">Em 10 min</string>
+    <string name="call_opt_redial_title">Ligar de novo em 10 min</string>
+    <string name="call_opt_redial_desc">Descarta a chamada e pede retorno</string>
+    <string name="call_opt_cancel_short">Cancelar</string>
+    <string name="call_opt_cancel_title">Cancelar ligação</string>
+    <string name="call_opt_cancel_desc">Descarta a chamada e pausa o agente</string>
     <string name="call_route_bluetooth">BLUETOOTH</string>
     <string name="call_route_speaker">VIVA-VOZ</string>
     <string name="call_route_earpiece">TELEFONE</string>

@@ -157,7 +157,8 @@ async fn handle_phone_socket(state: Arc<AppState>, socket: WebSocket, device_nam
                     }
                     "hangup" => {
                         if let Some(call_id) = val.get("call_id").and_then(|v| v.as_str()) {
-                            state.handle_phone_hangup(call_id).await;
+                            let reason = val.get("reason").and_then(|v| v.as_str());
+                            state.handle_phone_hangup(call_id, reason).await;
                         }
                     }
                     _ => {}
