@@ -53,6 +53,7 @@ type Inst = {
   onLost: () => void;
 };
 
+const FRAME_INTERVAL_MS = 1000 / 30;
 const insts = new Set<Inst>();
 const byEl = new Map<Element, Inst>();
 
@@ -110,6 +111,7 @@ function compile(g: WebGLRenderingContext): boolean {
 function onContextLost(e: Event) {
   e.preventDefault();
   glLost = true;
+  stopFrame();
   for (const i of insts) {
     i.drawn = false;
     i.onLost();
@@ -211,11 +213,20 @@ function step(i: Inst, dt: number): boolean {
     const omega = k === "tint" ? COLOR_OMEGA : EASE_OMEGA;
     if (spring(i.s[k], t[k], omega, dt)) moving = true;
   }
-  const colorAlpha = 1 - Math.exp(-COLOR_OMEGA * dt);
-  for (let k = 0; k < 4; k++) {
-    i.tones[k] = mixLab(i.tones[k], i.targetTones[k], colorAlpha);
+  if (i.tones !== i.targetTones) {
+    const colorAlpha = 1 - Math.exp(-COLOR_OMEGA * dt);
+    let colorMoving = false;
+    for (let k = 0; k < 4; k++) {
+      const next = mixLab(i.tones[k], i.targetTones[k], colorAlpha);
+      if (next.some((value, j) => Math.abs(value - i.targetTones[k][j]) > 1e-4)) {
+        colorMoving = true;
+      }
+      i.tones[k] = next;
+    }
+    if (colorMoving) moving = true;
+    else i.tones = i.targetTones;
   }
-  if (reduced) return moving;
+  if (i.target.state === "idle") return moving;
   const big = Math.min(1, Math.max(0, (i.cssSize - 120) / (TEMPO_LARGE_PX - 120)));
   const tempo = 1 + (TEMPO_LARGE - 1) * big * big * (3 - 2 * big);
   i.phase += i.s.speed.x * tempo * dt;
@@ -230,7 +241,7 @@ function snap(i: Inst) {
     i.s[k].x = t[k];
     i.s[k].v = 0;
   }
-  i.tones = i.targetTones.map((lab) => [...lab] as Lab) as [Lab, Lab, Lab, Lab];
+  i.tones = i.targetTones;
 }
 
 function render(i: Inst): boolean {
@@ -270,21 +281,34 @@ let raf = 0;
 let last = 0;
 
 function schedule() {
-  if (raf || glFailed || typeof document === "undefined" || document.hidden) return;
+  if (raf || glFailed || glLost || document.hidden) return;
   raf = requestAnimationFrame(frame);
+}
+
+function stopFrame() {
+  if (raf) cancelAnimationFrame(raf);
+  raf = 0;
+  last = 0;
 }
 
 function frame(now: number) {
   raf = 0;
-  const dt = last ? Math.min((now - last) / 1000, 0.1) : 1 / 60;
+  if (document.hidden) {
+    stopFrame();
+    return;
+  }
+  const elapsed = last ? now - last : FRAME_INTERVAL_MS;
+  if (elapsed < FRAME_INTERVAL_MS - 1) {
+    schedule();
+    return;
+  }
   last = now;
   let again = false;
   for (const i of insts) {
-    if (!i.visible) continue;
-    measure(i, false);
-    if (i.w === 0) continue;
-    const active = step(i, dt);
-    if ((active || i.dirty || !i.drawn) && !glLost) {
+    if (!i.visible || i.w === 0) continue;
+    const active = !reduced && step(i, Math.min(elapsed / 1000, 0.1));
+    if (active || i.dirty || !i.drawn) {
+      if (reduced) snap(i);
       if (render(i)) i.dirty = false;
     }
     if (active) again = true;
@@ -294,27 +318,27 @@ function frame(now: number) {
 }
 
 function onVisibility() {
-  last = 0;
-  if (!document.hidden) schedule();
+  if (document.hidden) stopFrame();
+  else schedule();
 }
 
 let ro: ResizeObserver | null = null;
 let io: IntersectionObserver | null = null;
 
-function measure(i: Inst, fromObserver = true) {
-  const r = i.el.getBoundingClientRect();
-  const cssSize = Math.min(r.width, r.height);
-  if (!(cssSize > 0)) return;
+function resizeOrb(i: Inst, cssSize: number) {
   const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
-  const side = Math.max(16, Math.min(MAX_BACKING, Math.ceil((cssSize * EXTENT * dpr) / 16) * 16));
+  const side = cssSize > 0
+    ? Math.max(16, Math.min(MAX_BACKING, Math.ceil((cssSize * EXTENT * dpr) / 16) * 16))
+    : 0;
+  if (side === i.w && cssSize === i.cssSize) return;
+
   i.cssSize = cssSize;
   if (side !== i.w) {
     i.w = i.h = side;
     i.canvas.width = i.canvas.height = side;
-    i.dirty = true;
-    if (fromObserver && i.visible && !glLost) render(i);
   }
-  if (fromObserver) schedule();
+  i.dirty = true;
+  schedule();
 }
 
 function observers() {
@@ -322,7 +346,7 @@ function observers() {
     ro = new ResizeObserver((entries) => {
       for (const e of entries) {
         const i = byEl.get(e.target);
-        if (i) measure(i);
+        if (i) resizeOrb(i, Math.min(e.contentRect.width, e.contentRect.height));
       }
     });
   }
@@ -347,6 +371,9 @@ function observers() {
       schedule();
     });
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("resize", () => {
+      for (const i of insts) resizeOrb(i, i.cssSize);
+    });
   }
 }
 
@@ -385,7 +412,6 @@ export function attachOrb(
     onLost: cb.onLost,
   };
   snap(i);
-  ensureGl();
   i.ctx = canvas.getContext("2d");
   insts.add(i);
   byEl.set(el, i);
@@ -393,10 +419,17 @@ export function attachOrb(
   io!.observe(el);
   return {
     set(t) {
-      if (t.color !== i.target.color) {
+      const level = t.state === "speaking" ? t.level : 0;
+      const prev = i.target;
+      if (
+        t.state === prev.state && t.color === prev.color &&
+        t.previewTint === prev.previewTint && level === prev.level
+      ) return;
+      if (t.color !== prev.color) {
+        if (i.tones === i.targetTones) i.tones = [...i.tones];
         i.targetTones = hexToTones(t.color);
       }
-      i.target = { ...t };
+      i.target = { ...t, level };
       i.dirty = true;
       schedule();
     },
@@ -406,6 +439,7 @@ export function attachOrb(
       ro?.unobserve(el);
       io?.unobserve(el);
       if (insts.size === 0) {
+        stopFrame();
         if (releaseTimer) clearTimeout(releaseTimer);
         releaseTimer = setTimeout(() => {
           releaseTimer = null;

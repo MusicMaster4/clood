@@ -70,7 +70,13 @@ fn run_tailscale(args: &[&str]) -> Result<String, String> {
     Err(last_err)
 }
 
-pub fn detect_tailscale() -> TailscaleInfo {
+pub async fn detect_tailscale() -> TailscaleInfo {
+    tokio::task::spawn_blocking(detect_tailscale_sync)
+        .await
+        .unwrap_or_default()
+}
+
+fn detect_tailscale_sync() -> TailscaleInfo {
     if let Ok(raw) = run_tailscale(&["status", "--json"]) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
             let backend_state = v

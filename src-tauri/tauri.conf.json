@@ -12,6 +12,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "Clood",
         "width": 920,
         "height": 640,
@@ -21,7 +23,6 @@
         "decorations": false,
         "transparent": false,
         "center": true,
-        "visible": false,
         "backgroundColor": "#09090b"
       }
     ],

@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check } from "@tauri-apps/plugin-updater";
 
@@ -37,18 +38,23 @@ export async function checkForUpdate(): Promise<AvailableUpdate | null> {
     install: async (onProgress) => {
       let total = 0;
       let received = 0;
-      await update.downloadAndInstall((event) => {
-        if (event.event === "Started") {
-          total = event.data.contentLength ?? 0;
-          onProgress?.(total > 0 ? 0 : null);
-        } else if (event.event === "Progress") {
-          received += event.data.chunkLength;
-          onProgress?.(total > 0 ? Math.min(1, received / total) : null);
-        } else if (event.event === "Finished") {
-          onProgress?.(1);
-        }
-      });
-      await relaunch();
+      await invoke("set_update_installing", { installing: true });
+      try {
+        await update.downloadAndInstall((event) => {
+          if (event.event === "Started") {
+            total = event.data.contentLength ?? 0;
+            onProgress?.(total > 0 ? 0 : null);
+          } else if (event.event === "Progress") {
+            received += event.data.chunkLength;
+            onProgress?.(total > 0 ? Math.min(1, received / total) : null);
+          } else if (event.event === "Finished") {
+            onProgress?.(1);
+          }
+        });
+        await relaunch();
+      } finally {
+        await invoke("set_update_installing", { installing: false });
+      }
     },
   };
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import QRCode from "qrcode";
+import { pairingQrDataUrl } from "../lib/pairing-qr";
 import { ArrowRight, Check, Eye, EyeOff, RefreshCw, Shield, Smartphone } from "lucide-react";
 import {
   getPairingPayload,
@@ -33,12 +33,7 @@ export function Onboarding({ config, status, onSave, onStatusChange }: Onboardin
       .then(async (p) => {
         if (cancelled) return;
         setPayload(p);
-        const url = await QRCode.toDataURL(p.uri, {
-          width: 260,
-          margin: 3,
-          color: { dark: "#09090b", light: "#ffffff" },
-          errorCorrectionLevel: "M",
-        });
+        const url = await pairingQrDataUrl(p.uri, 260);
         if (!cancelled) setQrUrl(url);
       })
       .catch(() => {

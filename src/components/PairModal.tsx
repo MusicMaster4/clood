@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import QRCode from "qrcode";
+import { pairingQrDataUrl } from "../lib/pairing-qr";
 import { RefreshCw, RotateCcw, Shield, Smartphone, X } from "lucide-react";
 import {
   getPairingPayload,
@@ -28,12 +28,7 @@ export function PairModal({ open, status, onClose, onStatusChange }: PairModalPr
     try {
       const p = await getPairingPayload();
       setPayload(p);
-      const url = await QRCode.toDataURL(p.uri, {
-        width: 280,
-        margin: 3,
-        color: { dark: "#09090b", light: "#ffffff" },
-        errorCorrectionLevel: "M",
-      });
+      const url = await pairingQrDataUrl(p.uri, 280);
       setQrDataUrl(url);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -67,12 +62,7 @@ export function PairModal({ open, status, onClose, onStatusChange }: PairModalPr
     try {
       const p = await rotatePairingToken();
       setPayload(p);
-      const url = await QRCode.toDataURL(p.uri, {
-        width: 280,
-        margin: 3,
-        color: { dark: "#09090b", light: "#ffffff" },
-        errorCorrectionLevel: "M",
-      });
+      const url = await pairingQrDataUrl(p.uri, 280);
       setQrDataUrl(url);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

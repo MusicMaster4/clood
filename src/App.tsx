@@ -51,26 +51,37 @@ export function App() {
   const updater = useUpdater();
 
   useEffect(() => {
-    void getConfig().then(setConfig);
-    void getStatus().then(setStatus);
-
-    let unStatus: (() => void) | undefined;
-    let unAudio: (() => void) | undefined;
-
-    void onStatusEvent((next) => {
-      setStatus(next);
-      setAudio({ speaking: next.agent_speaking, level: next.audio_level });
-    }).then((fn) => {
-      unStatus = fn;
+    let disposed = false;
+    let gotStatus = false;
+    let gotAudio = false;
+    void getConfig().then((next) => {
+      if (!disposed) setConfig(next);
     });
 
-    void onAudioLevelEvent((lvl) => setAudio(lvl)).then((fn) => {
-      unAudio = fn;
+    const statusListener = onStatusEvent((next) => {
+      if (disposed) return;
+      gotStatus = true;
+      gotAudio = true;
+      setStatus(next);
+      setAudio({ speaking: next.agent_speaking, level: next.audio_level });
+    });
+    const audioListener = onAudioLevelEvent((level) => {
+      if (disposed) return;
+      gotAudio = true;
+      setAudio(level);
+    });
+    void Promise.all([statusListener, audioListener]).then(async () => {
+      if (disposed) return;
+      const next = await getStatus();
+      if (disposed) return;
+      if (!gotStatus) setStatus(next);
+      if (!gotAudio) setAudio({ speaking: next.agent_speaking, level: next.audio_level });
     });
 
     return () => {
-      unStatus?.();
-      unAudio?.();
+      disposed = true;
+      void statusListener.then((unlisten) => unlisten());
+      void audioListener.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -166,14 +177,16 @@ export function App() {
         <>
           <main className="stage">
             <div className="orb-wrap">
-              <Orb
-                state={orbState}
-                color={orbColor}
-                level={audio.level}
-                previewTint={!isActive}
-                size={256}
-                label={config?.agent_name || "Clood"}
-              />
+              {config && status && (
+                <Orb
+                  state={orbState}
+                  color={orbColor}
+                  level={audio.level}
+                  previewTint={!isActive}
+                  size={256}
+                  label={config.agent_name || "Clood"}
+                />
+              )}
             </div>
 
             <div className="stage-cue">
