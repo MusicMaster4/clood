@@ -31,13 +31,12 @@ async fn health() -> impl IntoResponse {
     }))
 }
 
-async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+async fn api_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let st = state.status().await;
     let cfg = state.config.read().await.clone();
-    let ready = st.tailscale.available
-        && st.phone_connected
-        && !cfg.openai_api_key.trim().is_empty()
-        && st.active_call.is_none();
+    let openai_configured = !cfg.openai_api_key.trim().is_empty();
+    // The authenticated phone connection is the transport start_call uses.
+    let ready = st.phone_connected && openai_configured && st.active_call.is_none();
 
     Json(json!({
         "ok": true,
@@ -49,7 +48,7 @@ async fn api_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "tailscale": st.tailscale,
         "phone_connected": st.phone_connected,
         "phone_device_name": st.phone_device_name,
-        "openai_configured": !cfg.openai_api_key.trim().is_empty(),
+        "openai_configured": openai_configured,
         "active_call": st.active_call
     }))
 }
@@ -186,5 +185,38 @@ pub async fn run_agent_api(state: Arc<AppState>) {
 
     if let Ok(listener) = tokio::net::TcpListener::bind(addr).await {
         let _ = axum::serve(listener, app).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calls::ConnectedPhone;
+    use crate::tailscale::TailscaleInfo;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn connected_phone_is_ready_while_tailscale_is_starting() {
+        let state = AppState::new();
+        state.config.write().await.openai_api_key = "test-key".into();
+        *state.tailscale.write().await = TailscaleInfo {
+            ipv4: Some("100.64.0.1".into()),
+            error: Some("Tailscale state: Starting".into()),
+            ..Default::default()
+        };
+
+        let Json(before) = api_status(State(Arc::clone(&state))).await;
+        assert_eq!(before["ready_to_call"], false);
+
+        let (tx, _rx) = mpsc::channel(1);
+        *state.phone.lock().await = Some(ConnectedPhone {
+            conn_id: "test-connection".into(),
+            device_name: "Test phone".into(),
+            tx,
+        });
+
+        let Json(after) = api_status(State(state)).await;
+        assert_eq!(after["tailscale"]["available"], false);
+        assert_eq!(after["ready_to_call"], true);
     }
 }

@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::calls::{AppState, PhoneOutbound};
 use crate::codec::decode_wire_frame;
-use crate::tailscale::{detect_tailscale, is_tailscale_ipv4};
+use crate::tailscale::is_tailscale_ipv4;
 
 #[derive(Debug, Deserialize)]
 struct PairVerifyBody {
@@ -181,12 +181,12 @@ async fn handle_phone_socket(state: Arc<AppState>, socket: WebSocket, device_nam
 /// Supervises the Tailscale-bound phone server. Strictly binds ONLY to the local Tailscale IPv4.
 pub async fn supervise_phone_server(state: Arc<AppState>, mut restart_rx: watch::Receiver<u64>) {
     const RETRY_INTERVAL: Duration = Duration::from_secs(12);
-    const MAX_OFFLINE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
+    const IDLE_INTERVAL: Duration = Duration::from_secs(60);
     let mut delay = RETRY_INTERVAL;
 
-    let initial = detect_tailscale().await;
-    *state.tailscale.write().await = initial;
+    state.update_tailscale_status().await;
     loop {
+        restart_rx.borrow_and_update();
         let port = state.config.read().await.tailscale_port;
         let ts_ip = state
             .tailscale
@@ -211,17 +211,40 @@ pub async fn supervise_phone_server(state: Arc<AppState>, mut restart_rx: watch:
                         .with_state(Arc::clone(&state));
 
                     let mut stop_watch = restart_rx.clone();
+                    let bound_ip = ip.to_string();
+                    let monitor_state = Arc::clone(&state);
                     let _ = axum::serve(
                         listener,
                         app.into_make_service_with_connect_info::<SocketAddr>(),
                     )
                     .with_graceful_shutdown(async move {
-                        let _ = stop_watch.changed().await;
+                        tokio::select! {
+                            _ = stop_watch.changed() => {}
+                            _ = async {
+                                // Tailscale can assign the IP before its backend is Running.
+                                loop {
+                                    let interval = if monitor_state.tailscale.read().await.available {
+                                        IDLE_INTERVAL
+                                    } else {
+                                        RETRY_INTERVAL
+                                    };
+                                    tokio::time::sleep(interval).await;
+                                    let fresh = monitor_state.update_tailscale_status().await;
+                                    if fresh.ipv4.as_deref().is_some_and(|ip| ip != bound_ip) {
+                                        break;
+                                    }
+                                }
+                            } => {}
+                        }
                     })
                     .await;
 
                     *state.phone_server_running.write().await = false;
                     state.emit_status().await;
+                    if restart_rx.has_changed().is_err() {
+                        break;
+                    }
+                    continue;
                 }
                 Err(_) => {
                     *state.phone_server_running.write().await = false;
@@ -240,9 +263,8 @@ pub async fn supervise_phone_server(state: Arc<AppState>, mut restart_rx: watch:
                 delay = RETRY_INTERVAL;
             }
             _ = tokio::time::sleep(delay) => {
-                let fresh = detect_tailscale().await;
-                *state.tailscale.write().await = fresh;
-                delay = (delay * 2).min(MAX_OFFLINE_RETRY_INTERVAL);
+                state.update_tailscale_status().await;
+                delay = (delay * 2).min(IDLE_INTERVAL);
             }
         }
     }

@@ -141,6 +141,7 @@ struct ActiveCallRuntime {
 pub struct AppState {
     pub config: RwLock<CloodConfig>,
     pub tailscale: RwLock<TailscaleInfo>,
+    tailscale_probe: Mutex<()>,
     pub phone_server_running: RwLock<bool>,
     pub phone: Mutex<Option<ConnectedPhone>>,
     active_call: Mutex<Option<ActiveCallRuntime>>,
@@ -156,6 +157,7 @@ impl AppState {
         Arc::new(Self {
             config: RwLock::new(cfg),
             tailscale: RwLock::new(TailscaleInfo::default()),
+            tailscale_probe: Mutex::new(()),
             phone_server_running: RwLock::new(false),
             phone: Mutex::new(None),
             active_call: Mutex::new(None),
@@ -307,11 +309,23 @@ impl AppState {
         Ok(next)
     }
 
-    pub async fn refresh_tailscale(&self) -> RuntimeStatus {
-        let ts = detect_tailscale().await;
-        *self.tailscale.write().await = ts;
-        self.trigger_phone_server_restart().await;
+    pub async fn update_tailscale_status(&self) -> TailscaleInfo {
+        let _probe = self.tailscale_probe.lock().await;
+        let fresh = detect_tailscale().await;
+        {
+            let mut current = self.tailscale.write().await;
+            if *current == fresh {
+                return fresh;
+            }
+            *current = fresh.clone();
+        }
         self.emit_status().await;
+        fresh
+    }
+
+    pub async fn refresh_tailscale(&self) -> RuntimeStatus {
+        self.update_tailscale_status().await;
+        self.trigger_phone_server_restart().await;
         self.status().await
     }
 
